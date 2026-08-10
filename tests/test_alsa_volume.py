@@ -671,7 +671,9 @@ async def test_check_mixer_control_hint_no_playback_volume(monkeypatch) -> None:
     from sendspin.alsa_volume import _check_mixer_control_hint
 
     # Element with no volume capability
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _amixer_exec("  Capabilities: pswitch\n"))
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", _amixer_exec("  Capabilities: pswitch\n")
+    )
 
     result = await _check_mixer_control_hint("0:Master")
     assert result is None
