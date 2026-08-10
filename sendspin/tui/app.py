@@ -246,6 +246,7 @@ class AppArgs:
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
     volume_controller: VolumeController | None = None
+    alsa_mixer_control: str | None = None
     hook_start: str | None = None
     hook_stop: str | None = None
     manufacturer: str | None = None
