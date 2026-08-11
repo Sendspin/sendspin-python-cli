@@ -197,7 +197,7 @@ async def _check_mixer_control_hint(mixer_control_hint: str) -> tuple[int, str] 
         return None
 
     if not await _has_playback_volume(card, element):
-        logger.debug(
+        logger.warning(
             "Mixer control hint %r (card %d, element %r) has no playback volume",
             mixer_control_hint,
             card,
