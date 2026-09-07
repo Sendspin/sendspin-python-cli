@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 AVAILABLE = sys.platform.startswith("linux") and shutil.which("amixer") is not None
 
 _HW_CARD_RE = re.compile(r"\bhw:(\d+)")
+_CARD_NAME_RE = re.compile(r"\bCARD=([^,\s]+)")
 
 _SCONTROL_RE = re.compile(r"Simple mixer control '([^']+)'")
 _VOLUME_RE = re.compile(r"\[(\d+)%\]")
@@ -34,20 +35,64 @@ _POLL_INTERVAL_S = 1.0
 # - PCM: bcm2835 headphones, some USB DACs
 _PREFERRED_ELEMENTS: tuple[str, ...] = ("Digital", "Master", "PCM")
 
+# PortAudio's ALSA host API enumerates the system default device using a
+# bare alias with no card info ("sysdefault", "default"), distinct from the
+# fully-qualified hints (e.g. "sysdefault:CARD=vc4hdmi") that `aplay -L`
+# reports for the same underlying device.
+_BARE_DEFAULT_NAMES = ("sysdefault", "default")
 
-def parse_alsa_card(device_name: str) -> int | None:
-    """Extract the ALSA card number from a PortAudio device name.
+
+def _resolve_bare_default_card(bare_name: str) -> str | None:
+    """Resolve a bare ALSA default alias to a card name via ``aplay -L``.
+
+    PortAudio may report the default output device as a bare alias like
+    "sysdefault" with no card info, while ``aplay -L`` (ALSA's own device-hint
+    listing) reports the same device fully-qualified, e.g.
+    "sysdefault:CARD=vc4hdmi". Cross-referencing recovers the card without
+    guessing at ALSA's own default-card resolution rules (env vars, config
+    overrides, etc.).
+
+    Only resolves when exactly one hint matches ``<bare_name>:CARD=`` — on a
+    system with multiple cards each exposing their own default hint, the
+    match is ambiguous and can't be safely disambiguated from names alone.
+    """
+    from sendspin.audio_devices import list_alsa_devices
+
+    prefix = f"{bare_name}:CARD="
+    matches = [name for name, _ in list_alsa_devices() if name.startswith(prefix)]
+    if len(matches) != 1:
+        return None
+    m = _CARD_NAME_RE.search(matches[0])
+    return m.group(1) if m else None
+
+
+def parse_alsa_card(device_name: str) -> int | str | None:
+    """Extract the ALSA card identifier from a device name.
 
     PortAudio names hardware devices like:
       "snd_rpi_hifiberry_dacplus: ... (hw:1,0)"
+    which gives a numeric card index.
 
-    Returns the card index or None for virtual devices.
+    Raw ALSA device names (e.g. from ``--audio-device plughw:CARD=vc4hdmi,DEV=0``,
+    used to reach the ``plug``/``dmix`` conversion layer that ``hw:N,M`` bypasses)
+    identify the card by string name instead:
+      "plughw:CARD=vc4hdmi,DEV=0"
+    ``amixer -c`` accepts either form directly (it resolves a name via
+    ``snd_card_get_index()`` internally), so both are returned as-is.
+
+    Returns the card index or name, or None for virtual devices
+    (pipewire, pulse, default, etc.) that don't reference a specific card.
     """
     m = _HW_CARD_RE.search(device_name)
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    m = _CARD_NAME_RE.search(device_name)
+    if m:
+        return m.group(1)
+    return None
 
 
-async def _has_playback_volume(card: int, element: str) -> bool:
+async def _has_playback_volume(card: int | str, element: str) -> bool:
     """Check if an ALSA mixer element has playback volume capability.
 
     Accepts both ``pvolume`` (standard playback volume, e.g. HiFiBerry DAC+,
@@ -75,7 +120,7 @@ async def _has_playback_volume(card: int, element: str) -> bool:
     return "pvolume" in caps or "volume" in caps
 
 
-async def find_mixer_element(card: int) -> str | None:
+async def find_mixer_element(card: int | str) -> str | None:
     """Discover the playback volume mixer element on an ALSA card.
 
     Runs ``amixer -c <card> scontrols``, then checks each element for
@@ -100,12 +145,12 @@ async def find_mixer_element(card: int) -> str | None:
         return None
 
     if proc.returncode != 0:
-        logger.debug("amixer -c %d scontrols failed (exit %d)", card, proc.returncode)
+        logger.debug("amixer -c %s scontrols failed (exit %d)", card, proc.returncode)
         return None
 
     available: list[str] = _SCONTROL_RE.findall(stdout.decode())
     if not available:
-        logger.debug("ALSA card %d has no mixer controls", card)
+        logger.debug("ALSA card %s has no mixer controls", card)
         return None
 
     seen: set[str] = set()
@@ -119,7 +164,7 @@ async def find_mixer_element(card: int) -> str | None:
 
     if not volume_elements:
         logger.debug(
-            "ALSA card %d: no playback volume element among %s",
+            "ALSA card %s: no playback volume element among %s",
             card,
             sorted(seen),
         )
@@ -128,26 +173,32 @@ async def find_mixer_element(card: int) -> str | None:
     # Prefer well-known element names used by common DAC HATs.
     for preferred in _PREFERRED_ELEMENTS:
         if preferred in volume_elements:
-            logger.debug("ALSA card %d: selected preferred mixer element %r", card, preferred)
+            logger.debug("ALSA card %s: selected preferred mixer element %r", card, preferred)
             return preferred
 
     # Fallback: first element with playback volume (e.g. USB DACs with non-standard names).
     selected = volume_elements[0]
-    logger.debug("ALSA card %d: selected mixer element %r", card, selected)
+    logger.debug("ALSA card %s: selected mixer element %r", card, selected)
     return selected
 
 
 async def async_check_alsa_available(
     audio_device: AudioDevice,
-) -> tuple[int, str] | None:
+) -> tuple[int | str, str] | None:
     """Check if ALSA mixer volume control is available for a device.
 
-    Returns ``(card_number, mixer_element)`` if available, or None.
+    Falls back to resolving bare default aliases ("sysdefault", "default")
+    against ``aplay -L`` hints when the device name itself carries no card
+    info (see ``_resolve_bare_default_card``).
+
+    Returns ``(card, mixer_element)`` if available, or None.
     """
     if not AVAILABLE:
         return None
 
     card = parse_alsa_card(audio_device.name)
+    if card is None and audio_device.name in _BARE_DEFAULT_NAMES:
+        card = _resolve_bare_default_card(audio_device.name)
     if card is None:
         return None
 
@@ -165,7 +216,7 @@ class AlsaVolumeController:
     on the ALSA card, giving true hardware volume control on DAC HATs.
     """
 
-    def __init__(self, card: int, element: str) -> None:
+    def __init__(self, card: int | str, element: str) -> None:
         self._card = str(card)
         self._element = element
         self._watch_task: asyncio.Task[None] | None = None
