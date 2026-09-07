@@ -192,6 +192,13 @@ same server don't require pairing again.
 If a pairing attempt fails (e.g. a mismatched PIN), the client logs the reason and you
 can retry by reconnecting.
 
+**Upgrading from a version before pairing support:** this client's protocol identity
+(`client_id`) used to be a stable, often user-chosen string; it's now derived from a
+generated cryptographic identity instead, so upgrading a previously-configured install
+makes it look like a brand-new device to any server it talks to. You'll likely need to
+re-add it to zones/groups (and re-pair, if the server requires it) after the first
+upgrade. The client logs a one-time warning when this happens.
+
 ### Client Identification
 
 Each client's cryptographic identity (used for encryption and pairing) and settings are

@@ -317,7 +317,31 @@ def _config_path(config_dir: str | None) -> Path:
     return Path(config_dir) if config_dir else Path.home() / ".config" / "sendspin"
 
 
-def _load_identity(path: Path) -> Identity:
+def _warn_if_upgrading_from_legacy_client_id(settings_path: Path) -> None:
+    """Warn once when a fresh identity replaces a pre-encryption install's client_id.
+
+    Before pairing support, ``client_id`` was a stable, often user-chosen string
+    (``--id``); it's now derived from the generated identity's public key instead,
+    so an upgrade presents as a brand-new device to any server that keyed player
+    records/groups off the old client_id (see sendspin-python-cli#277).
+    """
+    try:
+        data = json.loads(settings_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    old_client_id = data.get("client_id")
+    if old_client_id:
+        logger.warning(
+            "Generating a new client identity to replace the old client_id %r. "
+            "Servers (e.g. Music Assistant) will see this as a new/different player "
+            "than before this upgrade — you may need to re-add it to any zones, "
+            "groups, or Home Assistant entities that referenced the old one, and "
+            "pair it again if the server requires pairing.",
+            old_client_id,
+        )
+
+
+def _load_identity(path: Path, settings_path: Path) -> Identity:
     """Load a persisted identity, generating and persisting a fresh one if absent."""
     try:
         data = json.loads(path.read_text())
@@ -325,6 +349,8 @@ def _load_identity(path: Path) -> Identity:
     except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError, ValueError) as e:
         if not isinstance(e, FileNotFoundError):
             logger.warning("Failed to load identity from %s, generating a new one: %s", path, e)
+        else:
+            _warn_if_upgrading_from_legacy_client_id(settings_path)
         identity = Identity.generate()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"private_key": b64url_encode(identity.private_bytes)}))
@@ -341,9 +367,11 @@ async def get_client_identity(
     servers see, so it must stay stable across restarts for pairing records and
     "last played server" arbitration to keep working.
     """
-    path = _config_path(config_dir) / f"identity-{mode}.json"
+    config_path = _config_path(config_dir)
+    path = config_path / f"identity-{mode}.json"
+    settings_path = config_path / f"settings-{mode}.json"
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _load_identity, path)
+    return await loop.run_in_executor(None, _load_identity, path, settings_path)
 
 
 async def get_client_pairing_store(
