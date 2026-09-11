@@ -347,10 +347,18 @@ class SendspinDaemon:
             return
 
         if not client.connected:
-            # attach_task finished (rejected / bring-up failed) without admitting.
+            # attach_task finished without admitting — either rejected/failed bring-up
+            # (raises, logged below) or its own internal handshake timeout elapsed
+            # (aiosendspin catches that internally and returns normally, so there's no
+            # exception to report; without this the whole attempt is silent).
             exc = attach_task.exception() if attach_task.done() else None
             if exc is not None:
                 logger.warning("Handshake with server failed: %s", exc)
+            else:
+                logger.info(
+                    "Incoming connection did not complete admission "
+                    "(handshake timed out or was aborted); waiting for a retry."
+                )
             return
 
         # Lock ensures we wait for any in-progress handshake to complete
