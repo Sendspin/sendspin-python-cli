@@ -295,6 +295,86 @@ class ServeSettings(BaseSettings):
         return False
 
 
+@dataclass
+class SourceSettings(BaseSettings):
+    """Settings for source mode (capturing a local input into Sendspin)."""
+
+    client_id: str | None = None
+    last_server_url: str | None = None
+    source_input: str = "linein"
+    source_device: str | None = None
+    source_codec: str = "pcm"
+    source_sample_rate: int = 48000
+    source_channels: int = 2
+
+    def update(
+        self,
+        *,
+        name: str | None = None,
+        log_level: str | None = None,
+        client_id: str | None = None,
+        last_server_url: str | None = None,
+        source_input: str | None = None,
+        source_device: str | None = None,
+        source_codec: str | None = None,
+        source_sample_rate: int | None = None,
+        source_channels: int | None = None,
+    ) -> None:
+        """Update settings fields. Only changed fields trigger a save."""
+        changed = self._update_fields(
+            {
+                "name": name,
+                "log_level": log_level,
+                "client_id": client_id,
+                "last_server_url": last_server_url,
+                "source_input": source_input,
+                "source_device": source_device,
+                "source_codec": source_codec,
+                "source_sample_rate": source_sample_rate,
+                "source_channels": source_channels,
+            }
+        )
+        if changed:
+            self._schedule_save()
+
+    def _load(self) -> bool:
+        """Load settings from the settings file (blocking I/O)."""
+        if self._settings_file is None or not self._settings_file.exists():
+            logger.debug("Settings file does not exist: %s", self._settings_file)
+            return False
+
+        try:
+            data = json.loads(self._settings_file.read_text())
+            self.name = data.get("name")
+            self.log_level = data.get("log_level")
+            self.client_id = data.get("client_id")
+            self.last_server_url = data.get("last_server_url")
+            self.source_input = data.get("source_input", "linein")
+            self.source_device = data.get("source_device")
+            self.source_codec = data.get("source_codec", "pcm")
+            self.source_sample_rate = data.get("source_sample_rate", 48000)
+            self.source_channels = data.get("source_channels", 2)
+            logger.info("Loaded settings from %s", self._settings_file)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to load settings from %s: %s", self._settings_file, e)
+        return False
+
+
+async def get_source_settings(config_dir: str | None = None) -> SourceSettings:
+    """Create and load source-mode settings.
+
+    Args:
+        config_dir: Optional directory to store settings. Defaults to ~/.config/sendspin.
+
+    Returns:
+        SourceSettings instance with settings loaded from disk.
+    """
+    config_path = Path(config_dir) if config_dir else Path.home() / ".config" / "sendspin"
+    settings = SourceSettings(_settings_file=config_path / "settings-source.json")
+    await settings.load()
+    return settings
+
+
 async def get_client_settings(
     mode: Literal["tui", "daemon"], config_dir: str | None = None
 ) -> ClientSettings:

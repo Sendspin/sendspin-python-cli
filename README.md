@@ -323,6 +323,49 @@ Use `--manufacturer` and `--product-name` to override the device identity report
 sendspin daemon --name "Living Room" --manufacturer "Acme" --product-name "Living Room Speaker"
 ```
 
+### Source Mode
+
+Run as a **source** client to capture audio from a local input (line-in, turntable,
+Bluetooth receiver, or microphone) and stream it *into* Sendspin. The server mixes
+and distributes it to players like any other audio, so an analog input on one machine
+can play back synchronized across the whole group.
+
+```bash
+# Capture the default input device and stream it to a discovered server
+sendspin source
+
+# Pick a specific server, input device, and codec
+sendspin source --url ws://192.168.1.50:8927/sendspin --device 2 --codec flac
+
+# Stream a 440 Hz sine test tone (no capture hardware needed)
+sendspin source --input sine
+```
+
+List available capture devices:
+
+```bash
+sendspin audio-devices inputs
+```
+
+Key options:
+
+- `--input {linein,sine}` — capture from a real input device, or generate a sine test tone. Defaults to `linein`; passing `--device` implies `linein`.
+- `--device` — input device index or name (see `audio-devices inputs`).
+- `--codec {pcm,opus,flac}` — codec used to encode captured audio before sending (default `pcm`). Capture is 16-bit.
+- `--sample-rate` / `--channels` — capture format (default 48000 Hz, 2 channels).
+- `--line-sense` — report input signal presence to the server via `client/state`; the server may use it to decide when to start/stop the source.
+
+The **server** decides when a source streams: a source stays idle until the server
+sends a `start` command, and stops on `stop` or disconnect. This is a policy the
+server application makes for itself — the `aiosendspin` library never starts a
+source on its own — so a source connected to a server that does not ask for audio
+stays idle by design. A device may run both the `source` and `player` roles; when
+it does, it never plays its captured input locally — it only plays back what the
+server distributes, staying in sync with the group.
+
+Source-mode preferences (client id, last server, input/codec defaults) are persisted
+to `~/.config/sendspin/settings-source.json`.
+
 ### Hooks
 
 You can run external commands when audio streams start or stop. This is useful for controlling amplifiers, lighting, or other home automation:
