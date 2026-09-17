@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import platform
 import sys
+import uuid
 from collections.abc import Coroutine
 from importlib.metadata import version
 from pathlib import Path
@@ -65,6 +66,19 @@ def create_task(
     return task
 
 
+def _detect_mac_address() -> str | None:
+    """Return a stable hardware MAC address, or None if only a synthesized one is available.
+
+    ``uuid.getnode()`` sets the multicast bit on the address it returns when it
+    couldn't find a real network interface MAC, falling back to a random value
+    instead; that's not a stable identifier, so treat it as unavailable.
+    """
+    node = uuid.getnode()
+    if (node >> 40) & 0x01:
+        return None
+    return ":".join(f"{(node >> (8 * i)) & 0xFF:02x}" for i in reversed(range(6)))
+
+
 def get_device_info(
     *,
     manufacturer: str | None = None,
@@ -120,4 +134,5 @@ def get_device_info(
         product_name=detected_product_name,
         manufacturer=manufacturer,
         software_version=software_version,
+        mac_address=_detect_mac_address(),
     )

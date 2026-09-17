@@ -11,13 +11,14 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import ClientError, web
-from aiosendspin.client import ClientListener, SendspinClient
+from aiosendspin.client import ClientListener, PairingSupport, SendspinClient
 from aiosendspin.models.core import GroupUpdateServerPayload, ServerCommandPayload
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
 from aiosendspin.models.types import (
-    ConnectionReason,
+    Activity,
     GoodbyeReason,
+    PairAbortReason,
     PlaybackStateType,
     PlayerCommand,
     Roles,
@@ -30,6 +31,8 @@ from sendspin.settings import ClientSettings
 from sendspin.utils import create_task, get_device_info
 
 if TYPE_CHECKING:
+    from aiosendspin.noise import ClientPairingStore, Identity
+
     from sendspin.volume_controller import VolumeController
 
 logger = logging.getLogger(__name__)
@@ -40,7 +43,8 @@ class DaemonArgs:
     """Configuration for the Sendspin daemon."""
 
     audio_device: AudioDevice
-    client_id: str
+    identity: Identity
+    pairing_store: ClientPairingStore
     client_name: str
     settings: ClientSettings
     url: str | None = None
@@ -81,6 +85,7 @@ class SendspinDaemon:
         self._server_url: str | None = None
         self._group_update_unsubscribe: Callable[[], None] | None = None
         self._server_command_unsubscribe: Callable[[], None] | None = None
+        self._pairing_abort_unsubscribe: Callable[[], None] | None = None
 
     def _create_client(self) -> SendspinClient:
         """Create a new SendspinClient instance."""
@@ -95,9 +100,11 @@ class SendspinDaemon:
             supported_formats.insert(0, self._args.preferred_format)
 
         return SendspinClient(
-            client_id=self._args.client_id,
+            identity=self._args.identity,
             client_name=self._args.client_name,
             roles=client_roles,
+            pairing_store=self._args.pairing_store,
+            pairing_support=self._build_pairing_support(),
             device_info=get_device_info(
                 manufacturer=self._args.manufacturer,
                 product_name=self._args.product_name,
@@ -113,9 +120,25 @@ class SendspinDaemon:
             initial_muted=self._audio_handler.muted,
         )
 
+    def _build_pairing_support(self) -> PairingSupport:
+        """Build pairing-PIN out-channels for headless (log-based) display."""
+        return PairingSupport(
+            pin_display=self._show_pairing_code,
+            offer_static_pin=True,
+        )
+
+    async def _show_pairing_code(self, code: str | None) -> None:
+        """Log (or clear) the derived dynamic pairing PIN."""
+        if code is not None:
+            logger.info("Pairing required: enter PIN %s on the server.", code)
+
+    def _handle_pairing_abort(self, reason: PairAbortReason) -> None:
+        """Log a non-closing pairing abort (e.g. a mismatched code)."""
+        logger.warning("Pairing failed: %s", reason.value)
+
     async def run(self) -> int:
         """Run the daemon."""
-        logger.info("Starting Sendspin daemon: %s", self._args.client_id)
+        logger.info("Starting Sendspin daemon: %s", self._args.identity.peer_id)
         loop = asyncio.get_running_loop()
 
         # Store reference to current task so it can be cancelled on shutdown
@@ -205,7 +228,7 @@ class SendspinDaemon:
         self._connection_lock = asyncio.Lock()
 
         self._listener = ClientListener(
-            client_id=self._args.client_id,
+            client_id=self._args.identity.peer_id,
             on_connection=self._handle_server_connection,
             port=self._args.listen_port,
             client_name=self._args.client_name,
@@ -226,6 +249,9 @@ class SendspinDaemon:
             self._handle_server_command
         )
         self._group_update_unsubscribe = client.add_group_update_listener(self._on_group_update)
+        self._pairing_abort_unsubscribe = client.add_pairing_abort_listener(
+            self._handle_pairing_abort
+        )
         if MPRIS_AVAILABLE and self._args.use_mpris:
             self._mpris = SendspinMpris(client)
             self._mpris.start()
@@ -238,6 +264,9 @@ class SendspinDaemon:
         if self._group_update_unsubscribe is not None:
             self._group_update_unsubscribe()
             self._group_update_unsubscribe = None
+        if self._pairing_abort_unsubscribe is not None:
+            self._pairing_abort_unsubscribe()
+            self._pairing_abort_unsubscribe = None
         if self._mpris is not None:
             self._mpris.stop()
             self._mpris = None
@@ -265,12 +294,12 @@ class SendspinDaemon:
         if new_client.server_info.server_id == old_client.server_info.server_id:
             return True
 
-        new_reason = new_client.server_info.connection_reason
-        old_reason = old_client.server_info.connection_reason
+        new_is_playback = Activity.PLAYBACK in new_client.activities
+        old_is_playback = Activity.PLAYBACK in old_client.activities
 
-        if new_reason == ConnectionReason.PLAYBACK:
+        if new_is_playback:
             return True
-        if old_reason == ConnectionReason.PLAYBACK:
+        if old_is_playback:
             return False
 
         # Both 'discovery' — prefer last played server.
@@ -290,68 +319,88 @@ class SendspinDaemon:
             self._settings.update(last_played_server_id=server_id)
 
     async def _handle_server_connection(self, ws: web.WebSocketResponse) -> None:
-        """Handle an incoming server connection."""
+        """Handle an incoming server connection.
+
+        ``SendspinClient.attach_websocket()`` now blocks for the connection's
+        entire lifetime once admitted (it only returns when the connection
+        closes), so it's driven as a background task here and ``client.connected``
+        is polled to learn when admission completes — the same pattern
+        aiosendspin's own tests use for server-initiated dials.
+        """
         logger.info("Server connected")
         assert self._audio_handler is not None
         assert self._connection_lock is not None
         assert self._settings is not None
+
+        client = self._create_client()
+        attach_task = create_task(client.attach_websocket(ws))
+
+        try:
+            async with asyncio.timeout(30):
+                while not client.connected and not attach_task.done():
+                    await asyncio.sleep(0.01)
+        except TimeoutError:
+            logger.warning("Handshake with server timed out")
+            attach_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await attach_task
+            return
+
+        if not client.connected:
+            # attach_task finished without admitting — either rejected/failed bring-up
+            # (raises, logged below) or its own internal handshake timeout elapsed
+            # (aiosendspin catches that internally and returns normally, so there's no
+            # exception to report; without this the whole attempt is silent).
+            exc = attach_task.exception() if attach_task.done() else None
+            if exc is not None:
+                logger.warning("Handshake with server failed: %s", exc)
+            else:
+                logger.info(
+                    "Incoming connection did not complete admission "
+                    "(handshake timed out or was aborted); waiting for a retry."
+                )
+            return
 
         # Lock ensures we wait for any in-progress handshake to complete
         # before disconnecting the previous server
         async with self._connection_lock:
             old_client = self._client
 
-            # Per spec: always complete the handshake before deciding which
-            # server to keep.
-            client = self._create_client()
-
-            try:
-                await client.attach_websocket(ws)
-            except TimeoutError:
-                logger.warning("Handshake with server timed out")
-                return
-            except Exception:
-                logger.exception("Error during server handshake")
-                return
-
             # Decide which server to keep.
             if old_client is not None:
                 if self._should_switch_to_new_server(old_client, client):
                     assert client.server_info is not None
                     logger.info(
-                        "Switching to server '%s' (%s)",
+                        "Switching to server '%s' (activities=%s)",
                         client.server_info.name,
-                        client.server_info.connection_reason.value,
+                        [a.value for a in client.activities],
                     )
                     self._detach_client()
                     await self._handle_disconnect()
-                    await old_client.send_goodbye(GoodbyeReason.ANOTHER_SERVER)
-                    await old_client.disconnect()
+                    await old_client.disconnect(GoodbyeReason.ANOTHER_SERVER)
                 else:
                     assert old_client.server_info is not None
                     assert client.server_info is not None
                     logger.info(
-                        "Keeping server '%s', rejecting '%s' (%s)",
+                        "Keeping server '%s', rejecting '%s' (activities=%s)",
                         old_client.server_info.name,
                         client.server_info.name,
-                        client.server_info.connection_reason.value,
+                        [a.value for a in client.activities],
                     )
-                    await client.send_goodbye(GoodbyeReason.ANOTHER_SERVER)
-                    await client.disconnect()
+                    await client.disconnect(GoodbyeReason.ANOTHER_SERVER)
+                    with contextlib.suppress(Exception):
+                        await attach_task
                     return
 
             self._attach_client(client)
 
-        # Handshake complete, release lock so new connections can proceed
-        # Now wait for disconnect (outside the lock)
+        # Handshake complete, release lock so new connections can proceed.
+        # attach_task only resolves once the connection actually closes.
         try:
-            disconnect_event = asyncio.Event()
-            unsubscribe = client.add_disconnect_listener(disconnect_event.set)
-            await disconnect_event.wait()
-            unsubscribe()
+            await attach_task
             logger.info("Server disconnected")
         except Exception:
-            logger.exception("Error waiting for server disconnect")
+            logger.exception("Error while connection was active")
         finally:
             # Only cleanup if we're still the active client (not replaced by new connection)
             if self._client is client:
@@ -369,6 +418,7 @@ class SendspinDaemon:
         while True:
             try:
                 await self._client.connect(url)
+                logger.info("Connected to %s", url)
                 error_backoff = 1.0
 
                 # Wait for disconnect
@@ -451,7 +501,7 @@ class SendspinDaemon:
                 server_id=server_info.server_id if server_info else None,
                 server_name=server_info.name if server_info else None,
                 server_url=self._server_url,
-                client_id=self._args.client_id,
+                client_id=self._args.identity.peer_id,
                 client_name=self._args.client_name,
             )
         )

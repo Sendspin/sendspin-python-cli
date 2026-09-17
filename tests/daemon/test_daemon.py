@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from aiosendspin.models.types import PlayerCommand
+from aiosendspin.noise import Identity, InMemoryClientPairingStore
 
 from sendspin.daemon.daemon import DaemonArgs, SendspinDaemon
 from sendspin.settings import ClientSettings
@@ -34,7 +35,8 @@ def _make_daemon(tmp_path: Path, *, settings_volume: int, settings_muted: bool) 
     )
     args = DaemonArgs(
         audio_device=SimpleNamespace(index=0, name="Fake Device"),
-        client_id="test-client",
+        identity=Identity.generate(),
+        pairing_store=InMemoryClientPairingStore(),
         client_name="Test Client",
         settings=settings,
         use_mpris=False,

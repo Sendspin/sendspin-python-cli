@@ -9,9 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import stat
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, ClassVar, Literal
+
+from aiosendspin.noise import FileClientPairingStore, Identity, b64url_decode, b64url_encode
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +119,6 @@ class ClientSettings(BaseSettings):
     player_muted: bool = False
     static_delay_ms: float = 0.0
     last_server_url: str | None = None
-    client_id: str | None = None
     audio_device: str | None = None
     use_mpris: bool = True
     audio_format: str | None = None
@@ -141,7 +144,6 @@ class ClientSettings(BaseSettings):
         static_delay_ms: float | None = None,
         last_server_url: str | None = None,
         name: str | None = None,
-        client_id: str | None = None,
         audio_device: str | None = None,
         log_level: str | None = None,
         listen_port: int | None = None,
@@ -174,7 +176,6 @@ class ClientSettings(BaseSettings):
                     "static_delay_ms": static_delay_ms,
                     "last_server_url": last_server_url,
                     "name": name,
-                    "client_id": client_id,
                     "audio_device": audio_device,
                     "log_level": log_level,
                     "listen_port": listen_port,
@@ -217,7 +218,6 @@ class ClientSettings(BaseSettings):
             elif self.static_delay_ms > 5000:
                 self.static_delay_ms = 5000.0
             self.last_server_url = data.get("last_server_url")
-            self.client_id = data.get("client_id")
             self.audio_device = data.get("audio_device")
             self.use_mpris = data.get("use_mpris", True)
             self.audio_format = data.get("audio_format")
@@ -311,6 +311,76 @@ async def get_client_settings(
     settings = ClientSettings(_settings_file=config_path / f"settings-{mode}.json")
     await settings.load()
     return settings
+
+
+def _config_path(config_dir: str | None) -> Path:
+    return Path(config_dir) if config_dir else Path.home() / ".config" / "sendspin"
+
+
+def _warn_if_upgrading_from_legacy_client_id(settings_path: Path) -> None:
+    """Warn once when a fresh identity replaces a pre-encryption install's client_id.
+
+    Before pairing support, ``client_id`` was a stable, often user-chosen string
+    (``--id``); it's now derived from the generated identity's public key instead,
+    so an upgrade presents as a brand-new device to any server that keyed player
+    records/groups off the old client_id (see sendspin-python-cli#277).
+    """
+    try:
+        data = json.loads(settings_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    old_client_id = data.get("client_id")
+    if old_client_id:
+        logger.warning(
+            "Generating a new client identity to replace the old client_id %r. "
+            "Servers (e.g. Music Assistant) will see this as a new/different player "
+            "than before this upgrade — you may need to re-add it to any zones, "
+            "groups, or Home Assistant entities that referenced the old one, and "
+            "pair it again if the server requires pairing.",
+            old_client_id,
+        )
+
+
+def _load_identity(path: Path, settings_path: Path) -> Identity:
+    """Load a persisted identity, generating and persisting a fresh one if absent."""
+    try:
+        data = json.loads(path.read_text())
+        return Identity.from_private_bytes(b64url_decode(data["private_key"]))
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError, ValueError) as e:
+        if not isinstance(e, FileNotFoundError):
+            logger.warning("Failed to load identity from %s, generating a new one: %s", path, e)
+        else:
+            _warn_if_upgrading_from_legacy_client_id(settings_path)
+        identity = Identity.generate()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"private_key": b64url_encode(identity.private_bytes)}))
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        return identity
+
+
+async def get_client_identity(
+    mode: Literal["tui", "daemon"], config_dir: str | None = None
+) -> Identity:
+    """Load this client's persistent Noise identity, generating one on first run.
+
+    The identity's public key (``identity.peer_id``) is the protocol ``client_id``
+    servers see, so it must stay stable across restarts for pairing records and
+    "last played server" arbitration to keep working.
+    """
+    config_path = _config_path(config_dir)
+    path = config_path / f"identity-{mode}.json"
+    settings_path = config_path / f"settings-{mode}.json"
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _load_identity, path, settings_path)
+
+
+async def get_client_pairing_store(
+    mode: Literal["tui", "daemon"], config_dir: str | None = None
+) -> FileClientPairingStore:
+    """Open this client's persistent pairing-record store, seeding one on first run."""
+    path = _config_path(config_dir) / f"pairing-store-{mode}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return await FileClientPairingStore.open(path)
 
 
 async def get_serve_settings(config_dir: str | None = None) -> ServeSettings:

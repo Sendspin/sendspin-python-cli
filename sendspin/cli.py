@@ -11,7 +11,7 @@ import sys
 import traceback
 from collections.abc import Sequence
 from importlib.metadata import version
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from sendspin.alsa_volume import AVAILABLE as ALSA_AVAILABLE
 from sendspin.alsa_volume import (
@@ -23,11 +23,18 @@ from sendspin.hardware_volume import HardwareVolumeController
 from sendspin.hardware_volume import UNAVAILABLE_REASON as HW_VOLUME_UNAVAILABLE_REASON
 from sendspin.hardware_volume import async_check_available as hw_volume_check_available
 from sendspin.hook_volume import HookVolumeController
-from sendspin.settings import ClientSettings, get_client_settings, get_serve_settings
+from sendspin.settings import (
+    ClientSettings,
+    get_client_identity,
+    get_client_pairing_store,
+    get_client_settings,
+    get_serve_settings,
+)
 from sendspin.volume_controller import VolumeController
 
 if TYPE_CHECKING:
     from aiosendspin.models.player import SupportedAudioFormat
+    from aiosendspin.noise import ClientPairingStore, Identity
 
     from sendspin.audio_devices import AudioDevice
 
@@ -155,9 +162,14 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         help="Friendly name for this client (defaults to hostname)",
     )
     target.add_argument(
-        "--id",
+        "--settings-dir",
+        type=str,
         default=default,
-        help="Unique identifier for this client (defaults to sendspin-cli-<hostname>)",
+        help=(
+            "Directory to store settings, identity, and pairing records "
+            "(default: ~/.config/sendspin). Use a distinct directory to run "
+            "multiple instances on the same computer as separate clients."
+        ),
     )
     target.add_argument(
         "--log-level",
@@ -387,11 +399,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Friendly name for this client (defaults to hostname)",
     )
     daemon_parser.add_argument(
-        "--id",
-        default=None,
-        help="Unique identifier for this client (defaults to sendspin-cli-<hostname>)",
-    )
-    daemon_parser.add_argument(
         "--log-level",
         default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -427,7 +434,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--settings-dir",
         type=str,
         default=None,
-        help="Directory to store settings (default: ~/.config/sendspin)",
+        help=(
+            "Directory to store settings, identity, and pairing records "
+            "(default: ~/.config/sendspin). Use a distinct directory to run "
+            "multiple instances on the same computer as separate clients."
+        ),
     )
     daemon_parser.add_argument(
         "--disable-mpris",
@@ -605,19 +616,16 @@ class CLIError(Exception):
         self.exit_code = exit_code
 
 
-def _resolve_client_info(client_id: str | None, client_name: str | None) -> tuple[str, str]:
-    """Determine client ID and name, using hostname as fallback."""
-    if client_id is not None and client_name is not None:
-        return client_id, client_name
+def _resolve_client_name(client_name: str | None) -> str:
+    """Determine the client's friendly name, using hostname as fallback."""
+    if client_name is not None:
+        return client_name
 
     hostname = socket.gethostname()
     if not hostname:
-        raise CLIError("Unable to determine hostname. Please specify --id and/or --name", 1)
+        raise CLIError("Unable to determine hostname. Please specify --name", 1)
 
-    return (
-        client_id or f"sendspin-cli-{hostname}",
-        client_name or hostname,
-    )
+    return hostname
 
 
 def _resolve_preferred_format(
@@ -698,16 +706,19 @@ async def _run_daemon_mode(
     settings: ClientSettings,
     audio_device: AudioDevice,
     volume_controller: VolumeController | None,
+    identity: Identity,
+    pairing_store: ClientPairingStore,
 ) -> int:
     """Run the client in daemon mode (no UI)."""
     from sendspin.daemon.daemon import DaemonArgs, SendspinDaemon
 
-    client_id, client_name = _resolve_client_info(args.id, args.name)
+    client_name = _resolve_client_name(args.name)
 
     daemon_args = DaemonArgs(
         audio_device=audio_device,
         url=args.url,
-        client_id=client_id,
+        identity=identity,
+        pairing_store=pairing_store,
         client_name=client_name,
         settings=settings,
         static_delay_ms=args.static_delay_ms,
@@ -805,8 +816,11 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         args.command = "daemon"
 
     is_daemon = args.command == "daemon"
+    mode: Literal["tui", "daemon"] = "daemon" if is_daemon else "tui"
     settings_dir = getattr(args, "settings_dir", None)
-    settings = await get_client_settings("daemon" if is_daemon else "tui", settings_dir)
+    settings = await get_client_settings(mode, settings_dir)
+    identity = await get_client_identity(mode, settings_dir)
+    pairing_store = await get_client_pairing_store(mode, settings_dir)
 
     # Apply settings as defaults for CLI arguments (CLI > settings > hard-coded)
     url_from_settings = False
@@ -815,8 +829,6 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         url_from_settings = True
     if args.name is None:
         args.name = settings.name
-    if args.id is None:
-        args.id = settings.client_id
     if args.audio_device is None:
         args.audio_device = settings.audio_device
     if args.static_delay_ms is None and settings.static_delay_ms != 0.0:
@@ -897,17 +909,20 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
 
     # Handle daemon subcommand
     if args.command == "daemon":
-        return await _run_daemon_mode(args, settings, audio_device, volume_controller)
+        return await _run_daemon_mode(
+            args, settings, audio_device, volume_controller, identity, pairing_store
+        )
 
     from sendspin.tui.app import AppArgs, SendspinApp
 
-    client_id, client_name = _resolve_client_info(args.id, args.name)
+    client_name = _resolve_client_name(args.name)
 
     app_args = AppArgs(
         audio_device=audio_device,
         url=args.url,
         url_from_settings=url_from_settings,
-        client_id=client_id,
+        identity=identity,
+        pairing_store=pairing_store,
         client_name=client_name,
         settings=settings,
         static_delay_ms=args.static_delay_ms,

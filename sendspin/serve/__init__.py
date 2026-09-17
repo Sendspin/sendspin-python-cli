@@ -10,12 +10,12 @@ import re
 import signal
 import socket
 import sys
-import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import qrcode
+from aiosendspin.noise import Identity, InMemoryServerPairingStore
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientRemovedEvent,
@@ -120,12 +120,11 @@ async def run_server(config: ServeConfig) -> int:
     if sys.platform == "win32":
         event_loop.set_exception_handler(_windows_exception_handler)
 
-    server_id = f"sendspin-cli-{uuid.uuid4().hex[:8]}"
-
     server = SendspinPlayerServer(
         loop=event_loop,
-        server_id=server_id,
+        identity=Identity.generate(),
         server_name=config.name,
+        pairing_store=InMemoryServerPairingStore(),
     )
 
     client_connected = asyncio.Event()

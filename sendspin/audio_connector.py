@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.core import StreamStartMessage
-from aiosendspin.models.types import AudioCodec, ClientStateType
+from aiosendspin.models.types import AudioCodec
 
 from sendspin.audio import AudioPlayer
 from sendspin.audio_devices import AudioDevice
@@ -454,7 +454,7 @@ class AudioStreamHandler:
         if self._client is not None and self._client.connected:
             create_task(
                 self._client.send_player_state(
-                    state=ClientStateType.SYNCHRONIZED,
+                    available=True,
                     volume=self._volume,
                     muted=self._muted,
                 )

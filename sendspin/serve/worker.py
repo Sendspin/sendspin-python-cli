@@ -10,9 +10,9 @@ import asyncio
 import logging
 import multiprocessing as mp
 from multiprocessing.sharedctypes import Synchronized
-import uuid
 from contextlib import suppress
 
+from aiosendspin.noise import Identity, InMemoryServerPairingStore
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientRemovedEvent,
@@ -101,11 +101,11 @@ class ServeWorker:
     async def _start_server(self) -> None:
         """Start the SendspinPlayerServer on this worker's port."""
         loop = asyncio.get_running_loop()
-        server_id = f"sendspin-worker-{self.worker_id}-{uuid.uuid4().hex[:8]}"
         self._server = SendspinPlayerServer(
             loop=loop,
-            server_id=server_id,
+            identity=Identity.generate(),
             server_name=f"Sendspin Worker {self.worker_id}",
+            pairing_store=InMemoryServerPairingStore(),
             total_listeners=self._total_listeners,
         )
         self._server.add_event_listener(self._on_server_event)

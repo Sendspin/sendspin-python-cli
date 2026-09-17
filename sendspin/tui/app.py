@@ -13,16 +13,16 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aiosendspin.models.metadata import SessionUpdateMetadata
+    from aiosendspin.noise import ClientPairingStore, Identity
 
     from sendspin.volume_controller import VolumeController
 
 from aiohttp import ClientError
-from aiosendspin.client import SendspinClient
+from aiosendspin.client import PairingSupport, SendspinClient
 from aiosendspin.models.artwork import ArtworkChannel, ClientHelloArtworkSupport
 from aiosendspin.models.core import (
     GroupUpdateServerPayload,
     ServerCommandPayload,
-    ServerHelloPayload,
     ServerStatePayload,
     StreamStartMessage,
 )
@@ -34,6 +34,7 @@ from aiosendspin.models.player import (
 from aiosendspin.models.types import (
     ArtworkSource,
     MediaCommand,
+    PairAbortReason,
     PictureFormat,
     PlaybackStateType,
     PlayerCommand,
@@ -235,7 +236,8 @@ class AppArgs:
     """Configuration for the Sendspin application."""
 
     audio_device: AudioDevice
-    client_id: str
+    identity: Identity
+    pairing_store: ClientPairingStore
     client_name: str
     settings: ClientSettings
     url: str | None = None
@@ -334,9 +336,11 @@ class SendspinApp:
         assert self._audio_handler is not None
 
         return SendspinClient(
-            client_id=args.client_id,
+            identity=args.identity,
             client_name=args.client_name,
             roles=roles,
+            pairing_store=args.pairing_store,
+            pairing_support=self._build_pairing_support(),
             device_info=get_device_info(
                 manufacturer=args.manufacturer,
                 product_name=args.product_name,
@@ -354,6 +358,18 @@ class SendspinApp:
             initial_muted=self._audio_handler.muted,
         )
 
+    def _build_pairing_support(self) -> PairingSupport:
+        """Build pairing-PIN out-channels wired into the Rich UI."""
+        return PairingSupport(
+            pin_display=self._show_pairing_code,
+            offer_static_pin=True,
+        )
+
+    async def _show_pairing_code(self, code: str | None) -> None:
+        """Render (or clear) the derived dynamic pairing PIN in the UI."""
+        if self._ui is not None:
+            self._ui.show_pairing_code(code)
+
     def _attach_client(self) -> None:
         """Attach listeners, audio handler, visualizer, and MPRIS to the current client."""
         assert self._client is not None
@@ -365,7 +381,7 @@ class SendspinApp:
             self._client.add_controller_state_listener(self._handle_server_state),
             self._client.add_server_command_listener(self._handle_server_command),
             self._client.add_color_listener(self._handle_color_update),
-            self._client.add_server_hello_listener(self._handle_server_hello),
+            self._client.add_pairing_abort_listener(self._handle_pairing_abort),
         ]
         self._audio_handler.attach_client(self._client)
 
@@ -502,7 +518,7 @@ class SendspinApp:
                 on_color_mode_change=self._persist_color_mode,
             )
             self._ui.start()
-            self._ui.add_event(f"Using client ID: {args.client_id}")
+            self._ui.add_event(f"Using client ID: {args.identity.peer_id}")
             self._ui.add_event(f"Using audio device: {args.audio_device.name}")
 
             await self._discovery.start()
@@ -793,6 +809,8 @@ class SendspinApp:
         assert self._ui is not None
         state = self._state
         ui = self._ui
+        if isinstance(payload.metadata, UndefinedField):
+            return
         if payload.metadata is None or not state.update_metadata(payload.metadata):
             return
 
@@ -819,6 +837,8 @@ class SendspinApp:
     def _handle_color_update(self, payload: ServerStatePayload) -> None:
         """Forward a color@v1 palette payload to the UI."""
         assert self._ui is not None
+        if isinstance(payload.color, UndefinedField):
+            return
         self._ui.update_palette(payload.color)
 
     def _persist_color_mode(self, mode: ColorMode) -> None:
@@ -855,7 +875,7 @@ class SendspinApp:
         assert self._ui is not None
         state = self._state
         ui = self._ui
-        if not payload.controller:
+        if payload.controller is None or isinstance(payload.controller, UndefinedField):
             return
 
         controller = payload.controller
@@ -952,19 +972,10 @@ class SendspinApp:
         assert self._client is not None
         return self._client.compute_server_time(self._client.now_us())
 
-    def _handle_server_hello(self, payload: ServerHelloPayload) -> None:
-        """Hide the visualizer panel when the server didn't activate visualizer@v1."""
-        if not self._visualizer_enabled:
-            return
-        if Roles.VISUALIZER.value in payload.active_roles:
-            return
-        logger.warning(
-            "Server did not activate %s (active_roles=%s); hiding the visualizer panel.",
-            Roles.VISUALIZER.value,
-            payload.active_roles,
-        )
+    def _handle_pairing_abort(self, reason: PairAbortReason) -> None:
+        """Surface a non-closing pairing abort (e.g. a mismatched code) to the user."""
         if self._ui is not None:
-            self._ui.set_visualizer_enabled(False)
+            self._ui.add_event(f"Pairing failed: {reason.value}")
 
     def _handle_stream_start(self, message: StreamStartMessage) -> None:
         """Record which visualizer types the server negotiated for this stream."""
@@ -1031,7 +1042,7 @@ class SendspinApp:
                 server_id=server_info.server_id if server_info else None,
                 server_name=server_info.name if server_info else None,
                 server_url=server.url if server else None,
-                client_id=self._args.client_id,
+                client_id=self._args.identity.peer_id,
                 client_name=self._args.client_name,
             )
         )

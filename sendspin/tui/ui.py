@@ -154,6 +154,10 @@ class UIState:
     highlighted_shortcut: str | None = None
     highlight_time: float = 0.0
 
+    # Pairing: the derived dynamic PIN, shown while a pairing exchange is in
+    # progress. None when not pairing.
+    pairing_code: str | None = None
+
 
 class SendspinUI:
     """Rich-based terminal UI for the Sendspin CLI."""
@@ -683,6 +687,25 @@ class SendspinUI:
 
         return self._make_panel(content, title="Select Server", default_border="cyan")
 
+    def _build_pairing_panel(self) -> Panel:
+        """Build the pairing panel: the derived dynamic PIN."""
+        content = Table.grid()
+        content.add_column(justify="center")
+
+        content.add_row(Text("Pairing with server", style=self._themed("bold")))
+        content.add_row("")
+
+        if self._state.pairing_code:
+            code = Text(self._state.pairing_code, style=self._themed("bold cyan"))
+            content.add_row(code)
+            content.add_row("")
+
+        content.add_row(
+            Text("Approve this client on the server to finish pairing.", style=self._themed("dim"))
+        )
+
+        return self._make_panel(content, title="Pairing Required", default_border="cyan")
+
     def _build_playback_panel(self, *, expand: bool = False, min_info_rows: int = 0) -> Panel:
         """Build the playback panel with repeat/shuffle status."""
         info = Table.grid(padding=(0, 2))
@@ -1067,6 +1090,17 @@ class SendspinUI:
             layout.add_row(selector)
             return layout
 
+        # Pairing takes priority over the normal layout: it blocks playback
+        # until the operator approves this client on the server.
+        if self._state.pairing_code:
+            pairing = self._cached_panel(
+                "pairing",
+                (self._state.pairing_code,),
+                self._build_pairing_panel,
+            )
+            layout.add_row(pairing)
+            return layout
+
         narrow = width < 80
 
         # Now Playing panel
@@ -1416,6 +1450,11 @@ class SendspinUI:
     def is_server_selector_visible(self) -> bool:
         """Check if the server selector is currently visible."""
         return self._state.show_server_selector
+
+    def show_pairing_code(self, code: str | None) -> None:
+        """Show (or clear, on ``None``) the derived dynamic pairing PIN."""
+        self._state.pairing_code = code
+        self.refresh()
 
     def move_server_selection(self, delta: int) -> None:
         """Move the server selection by delta (-1 for up, +1 for down)."""
