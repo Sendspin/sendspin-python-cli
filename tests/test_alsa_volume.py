@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import sendspin.audio_devices as _audio_devices_mod
 import sendspin.alsa_volume as _alsa_mod
 from sendspin.alsa_volume import (
     AlsaVolumeController,
@@ -60,6 +61,19 @@ def test_parse_card_returns_none_for_virtual_device() -> None:
     assert parse_alsa_card("default") is None
     assert parse_alsa_card("pulse") is None
     assert parse_alsa_card("dmix") is None
+
+
+def test_parse_card_from_plughw_card_name() -> None:
+    """Raw ALSA device names use CARD=<name> instead of a numeric hw:N index."""
+    assert parse_alsa_card("plughw:CARD=vc4hdmi,DEV=0") == "vc4hdmi"
+
+
+def test_parse_card_from_dmix_card_name() -> None:
+    assert parse_alsa_card("dmix:CARD=vc4hdmi,DEV=0") == "vc4hdmi"
+
+
+def test_parse_card_from_hw_card_name() -> None:
+    assert parse_alsa_card("hw:CARD=Amp,DEV=0") == "Amp"
 
 
 # -- find_mixer_element -------------------------------------------------------
@@ -200,6 +214,24 @@ async def test_set_state_calls_amixer_sset(monkeypatch) -> None:
     ctrl = AlsaVolumeController(card=1, element="Digital")
     await ctrl.set_state(75, muted=False)
     assert calls == [("amixer", "-M", "-c", "1", "sset", "Digital", "playback", "75%", "unmute")]
+
+
+async def test_set_state_with_string_card_name(monkeypatch) -> None:
+    """set_state passes a string card name straight through to amixer -c.
+
+    amixer -c resolves a card name via snd_card_get_index() internally, so
+    this works without translating the name to a numeric index ourselves.
+    """
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        calls.append(argv)
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    ctrl = AlsaVolumeController(card="vc4hdmi", element="PCM")
+    await ctrl.set_state(75, muted=False)
+    assert calls == [("amixer", "-M", "-c", "vc4hdmi", "sset", "PCM", "playback", "75%", "unmute")]
 
 
 async def test_set_state_muted(monkeypatch) -> None:
@@ -353,6 +385,86 @@ async def test_alsa_available_for_hw_device_with_mixer(monkeypatch) -> None:
     device = SimpleNamespace(name="HiFiBerry DAC+: pcm512x (hw:1,0)", is_default=False)
     result = await async_check_alsa_available(device)
     assert result == (1, "Digital")
+
+
+async def test_alsa_available_for_plughw_card_name_device(monkeypatch) -> None:
+    """Returns (card_name, element) for a plughw:CARD=<name> device.
+
+    This is the raw ALSA device path (e.g. --audio-device plughw:CARD=vc4hdmi,DEV=0),
+    used to reach the plug/dmix conversion layer that hw:N,M bypasses.
+    """
+    scontrols = "Simple mixer control 'Digital',0\n"
+    sget_pvolume = "  Capabilities: pvolume pswitch\n"
+    calls: list[tuple[object, ...]] = []
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        calls.append(argv)
+        if "scontrols" in argv:
+            return _FakeProcess(stdout=scontrols.encode())
+        return _FakeProcess(stdout=sget_pvolume.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(_alsa_mod, "AVAILABLE", True)
+    device = SimpleNamespace(name="plughw:CARD=vc4hdmi,DEV=0", is_default=False)
+    result = await async_check_alsa_available(device)
+    assert result == ("vc4hdmi", "Digital")
+    assert calls[0] == ("amixer", "-c", "vc4hdmi", "scontrols")
+
+
+# Real `aplay -L` hint output from an ODROID-N2 (single card, reported in a
+# user issue): PortAudio's own device enumeration reports this same default
+# output device as the bare "sysdefault", with no CARD= info at all.
+_ODROIDN2_APLAY_L = [
+    ("null", "Discard all samples (playback) or generate zero samples (capture)"),
+    ("hw:CARD=ODROIDN2,DEV=0", "ODROID-N2,"),
+    ("plughw:CARD=ODROIDN2,DEV=0", "ODROID-N2,"),
+    ("sysdefault:CARD=ODROIDN2", "ODROID-N2,"),
+    ("dmix:CARD=ODROIDN2,DEV=0", "ODROID-N2,"),
+]
+
+
+async def test_alsa_available_for_bare_sysdefault_via_aplay_l(monkeypatch) -> None:
+    """Resolves bare 'sysdefault' (no CARD= info) via aplay -L hints."""
+    scontrols = "Simple mixer control 'Digital',0\n"
+    sget_pvolume = "  Capabilities: pvolume pswitch\n"
+    calls: list[tuple[object, ...]] = []
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        calls.append(argv)
+        if "scontrols" in argv:
+            return _FakeProcess(stdout=scontrols.encode())
+        return _FakeProcess(stdout=sget_pvolume.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(_alsa_mod, "AVAILABLE", True)
+    monkeypatch.setattr(_audio_devices_mod, "list_alsa_devices", lambda: _ODROIDN2_APLAY_L)
+    device = SimpleNamespace(name="sysdefault", is_default=True)
+    result = await async_check_alsa_available(device)
+    assert result == ("ODROIDN2", "Digital")
+    assert calls[0] == ("amixer", "-c", "ODROIDN2", "scontrols")
+
+
+async def test_alsa_not_available_for_bare_sysdefault_when_ambiguous(monkeypatch) -> None:
+    """Refuses to guess when multiple cards each expose a sysdefault hint."""
+    monkeypatch.setattr(_alsa_mod, "AVAILABLE", True)
+    monkeypatch.setattr(
+        _audio_devices_mod,
+        "list_alsa_devices",
+        lambda: [
+            ("sysdefault:CARD=ODROIDN2", "ODROID-N2,"),
+            ("sysdefault:CARD=USBDAC", "USB DAC,"),
+        ],
+    )
+    device = SimpleNamespace(name="sysdefault", is_default=True)
+    assert await async_check_alsa_available(device) is None
+
+
+async def test_alsa_not_available_for_bare_sysdefault_when_no_hint(monkeypatch) -> None:
+    """Falls back to None when aplay -L has no matching sysdefault hint."""
+    monkeypatch.setattr(_alsa_mod, "AVAILABLE", True)
+    monkeypatch.setattr(_audio_devices_mod, "list_alsa_devices", lambda: [])
+    device = SimpleNamespace(name="sysdefault", is_default=True)
+    assert await async_check_alsa_available(device) is None
 
 
 async def test_alsa_not_available_for_virtual_device(monkeypatch) -> None:
