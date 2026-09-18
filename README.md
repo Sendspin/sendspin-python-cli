@@ -85,6 +85,13 @@ uv tool upgrade sendspin
 sudo systemctl restart sendspin
 ```
 
+The installer may create a dedicated `sendspin` service account. In that case, the package is installed in that user's `uv` environment, not in your own shell. Upgrade the package as that user instead:
+
+```bash
+sudo -u sendspin bash -l -c "uv tool upgrade sendspin"
+sudo systemctl restart sendspin
+```
+
 Your client name, audio device selection, and other settings in `~/.config/sendspin/settings-daemon.json` are preserved during the update.
 
 > **Note:** You do **not** need to uninstall and reinstall when updating. Your configuration (client name, audio device, delay settings) is stored separately and will be preserved.
