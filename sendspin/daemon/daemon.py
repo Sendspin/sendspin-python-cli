@@ -443,9 +443,17 @@ class SendspinDaemon:
                 await asyncio.sleep(error_backoff)
                 error_backoff = min(error_backoff * 2, max_backoff)
 
-            except Exception:
-                logger.exception("Unexpected error during connection")
-                break
+            except Exception as e:
+                # Stay in the reconnect loop: an unexpected error must not
+                # silently end the daemon with exit code 0 (which the
+                # shipped systemd unit, Restart=on-failure, would ignore).
+                logger.exception(
+                    "Unexpected error (%s), retrying in %.0fs",
+                    type(e).__name__,
+                    error_backoff,
+                )
+                await asyncio.sleep(error_backoff)
+                error_backoff = min(error_backoff * 2, max_backoff)
 
     def _handle_server_command(self, payload: ServerCommandPayload) -> None:
         """Handle server commands for player volume/mute control."""
