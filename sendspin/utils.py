@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import platform
 import sys
 import uuid
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from aiosendspin.models.core import DeviceInfo
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -61,9 +64,25 @@ def create_task(
 
     TASKS.add(task)
     task.add_done_callback(TASKS.discard)
-    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+    task.add_done_callback(_log_task_exception)
 
     return task
+
+
+def _log_task_exception(task: asyncio.Task[Any]) -> None:
+    """Log a fire-and-forget background task failure instead of swallowing it.
+
+    Retrieving the exception suppresses "exception was never retrieved"
+    warnings, but the previous lambda then discarded it — every background
+    failure (hook/amixer/PulseAudio volume errors included) was invisible.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Background task %r failed", task.get_name(), exc_info=exc
+        )
 
 
 def _detect_mac_address() -> str | None:
