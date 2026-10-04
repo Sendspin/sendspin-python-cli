@@ -80,9 +80,7 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
         return
     exc = task.exception()
     if exc is not None:
-        logger.error(
-            "Background task %r failed", task.get_name(), exc_info=exc
-        )
+        logger.error("Background task %r failed", task.get_name(), exc_info=exc)
 
 
 def _detect_mac_address() -> str | None:
