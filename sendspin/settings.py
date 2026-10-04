@@ -107,9 +107,7 @@ class BaseSettings:
             self._settings_file.parent.mkdir(parents=True, exist_ok=True)
             # Write atomically: a kill mid-write must not truncate the live
             # file (a truncated file falls back to defaults on next load).
-            tmp_file = self._settings_file.with_suffix(
-                self._settings_file.suffix + ".tmp"
-            )
+            tmp_file = self._settings_file.with_suffix(self._settings_file.suffix + ".tmp")
             tmp_file.write_text(json.dumps(self.to_dict(), indent=2) + "\n")
             with open(tmp_file, "rb") as f:
                 os.fsync(f.fileno())
