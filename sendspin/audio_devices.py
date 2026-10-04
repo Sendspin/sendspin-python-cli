@@ -90,7 +90,12 @@ def _check_format(device: AudioDevice, rate: int, channels: int, dtype: str) -> 
             dtype=dtype,
         )
         return True
-    except sounddevice.PortAudioError:
+    except (sounddevice.PortAudioError, ValueError):
+        # PortAudio raises ValueError (not PortAudioError) for device names it
+        # does not recognise, e.g. raw ALSA names such as hw:CARD=...,DEV=... .
+        # The device itself is valid -- _try_alsa_device() already accepted it --
+        # so treat an unprobeable format as unsupported here and let the caller
+        # fall back to its safe defaults instead of failing at startup.
         return False
 
 
