@@ -35,6 +35,24 @@ logger = logging.getLogger(__name__)
 MAX_BUFFER_AHEAD_US = 5_000_000
 
 
+def server_now_us() -> int:
+    """Current time in microseconds on the aiosendspin server clock domain.
+
+    The aiosendspin server timestamps audio with ``RawMonotonicClock``
+    (``CLOCK_MONOTONIC_RAW`` on Linux), which — unlike
+    ``time.monotonic()`` — is not slewed by NTP/adjtime
+    (``aiosendspin/clock.py``). ``play_start_us`` is an absolute timestamp
+    consumed verbatim by workers/clients, so it must be sampled from the
+    same clock domain; ``time.monotonic()`` drifts away from it by every
+    NTP adjustment since boot (measured 102 s apart on one Linux host).
+    Interval-only measurements (stats/health timers) stay on
+    ``time.monotonic()``, which is the correct clock for durations.
+    """
+    if hasattr(time, "CLOCK_MONOTONIC_RAW"):
+        return time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 1_000
+    return time.monotonic_ns() // 1_000
+
+
 class ServeCoordinator:
     """Orchestrates multi-worker serve mode."""
 
@@ -243,7 +261,7 @@ class ServeCoordinator:
                 audio_source = await decode_audio(self.source, source_format=self.source_format)
                 fmt = audio_source.format
 
-                play_start_us = int(time.monotonic() * 1_000_000) + DEFAULT_INITIAL_DELAY_US
+                play_start_us = server_now_us() + DEFAULT_INITIAL_DELAY_US
 
                 async for pcm_chunk in audio_source.generator:
                     if self._shutdown_requested:
@@ -278,7 +296,7 @@ class ServeCoordinator:
 
                     play_start_us += chunk_duration_us
 
-                    now_us = int(time.monotonic() * 1_000_000)
+                    now_us = server_now_us()
                     ahead_us = play_start_us - DEFAULT_INITIAL_DELAY_US - now_us
                     if ahead_us > MAX_BUFFER_AHEAD_US:
                         await asyncio.sleep((ahead_us - MAX_BUFFER_AHEAD_US) / 1_000_000)
