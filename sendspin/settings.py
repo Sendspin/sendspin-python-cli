@@ -353,8 +353,12 @@ def _load_identity(path: Path, settings_path: Path) -> Identity:
             _warn_if_upgrading_from_legacy_client_id(settings_path)
         identity = Identity.generate()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"private_key": b64url_encode(identity.private_bytes)}))
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        # Create the key file with owner-only permissions from the outset:
+        # writing first and chmod-ing after leaves a window where the private
+        # key is readable by other users under a permissive umask.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"private_key": b64url_encode(identity.private_bytes)}))
         return identity
 
 
