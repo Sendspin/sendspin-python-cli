@@ -153,8 +153,8 @@ class AudioPlayer:
                 timestamps (monotonic clock time), accounting for clock drift, offset,
                 and static delay.
             compute_server_time: Function that converts client timestamps (monotonic
-                clock time) to server timestamps. Pure clock-domain conversion
-                without static delay adjustment.
+                clock time) to server timestamps, accounting for clock drift,
+                offset, and static delay as the inverse of compute_client_time.
             now_us: Function returning current monotonic time in microseconds.
                 Must be in the same clock domain as compute_client_time.
                 Defaults to time.monotonic().
@@ -303,19 +303,19 @@ class AudioPlayer:
         self._volume = max(0, min(100, volume))
         self._muted = muted
 
-    def apply_delay_change(self, delta_us: int) -> None:
-        """Adjust playback timing after a static delay change.
+    def apply_delay_change(self, delta_us: int) -> None:  # noqa: ARG002
+        """Accept a static delay notification while preserving source timestamps.
 
-        Offsets the server timestamp cursor so the sync correction mechanism
-        gradually speeds up or slows down playback to match the new delay.
-        This avoids clearing the audio buffer (which the server won't resend).
+        The live aiosendspin clock conversions already apply the updated delay.
+        The source cursor continues to track the audio frames being consumed;
+        existing sync correction follows the changed target on subsequent chunks.
+        Keeping this notification side-effect-free also preserves buffered audio
+        when queued notifications arrive after further delay changes.
 
         Args:
-            delta_us: Delay change in microseconds (positive = delay increased,
-                audio should play earlier, cursor shifts back).
+            delta_us: Reported delay change in microseconds, already reflected
+                by the clock conversion callbacks.
         """
-        if self._server_ts_cursor_us > 0:
-            self._server_ts_cursor_us -= delta_us
 
     def is_drained(self) -> bool:
         """Return True when the internal audio queue is empty.
