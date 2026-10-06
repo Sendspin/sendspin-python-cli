@@ -143,7 +143,7 @@ Settings are stored in `~/.config/sendspin/`:
 
 | Setting | Type | Mode | Description |
 |---------|------|------|-------------|
-| `player_volume` | integer (0-100) | TUI/daemon | Player output volume percentage |
+| `player_volume` | integer (0-100) | TUI/daemon | Player output volume percentage (`--player-volume`) |
 | `player_muted` | boolean | TUI/daemon | Whether the player is muted |
 | `static_delay_ms` | float | TUI/daemon | Extra playback delay in milliseconds |
 | `last_server_url` | string | TUI/daemon | Server URL (used as default for `--url`) |

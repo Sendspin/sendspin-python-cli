@@ -50,6 +50,7 @@ class DaemonArgs:
     settings: ClientSettings
     url: str | None = None
     static_delay_ms: float | None = None
+    player_volume: int | None = None
     listen_port: int = 8928
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
@@ -163,9 +164,16 @@ class SendspinDaemon:
         )
         self._static_delay_ms = max(0.0, min(5000.0, delay))
 
+        # CLI arg overrides settings for the initial player volume
+        volume = (
+            self._args.player_volume
+            if self._args.player_volume is not None
+            else self._settings.player_volume
+        )
+
         self._audio_handler = AudioStreamHandler(
             audio_device=self._args.audio_device,
-            volume=self._settings.player_volume,
+            volume=max(0, min(100, volume)),
             muted=self._settings.player_muted,
             on_event=self._on_stream_event,
             on_format_change=self._handle_format_change,

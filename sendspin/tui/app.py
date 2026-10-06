@@ -243,6 +243,7 @@ class AppArgs:
     url: str | None = None
     url_from_settings: bool = False
     static_delay_ms: float | None = None
+    player_volume: int | None = None
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
     volume_controller: VolumeController | None = None
@@ -483,9 +484,16 @@ class SendspinApp:
             )
             self._applied_delay_ms = max(0.0, min(5000.0, delay))
 
+            # CLI arg overrides settings for the initial player volume
+            volume = (
+                args.player_volume
+                if args.player_volume is not None
+                else self._settings.player_volume
+            )
+
             self._audio_handler = AudioStreamHandler(
                 audio_device=args.audio_device,
-                volume=self._settings.player_volume,
+                volume=max(0, min(100, volume)),
                 muted=self._settings.player_muted,
                 on_event=self._on_stream_event,
                 on_format_change=self._handle_format_change,

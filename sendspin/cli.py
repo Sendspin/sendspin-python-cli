@@ -184,6 +184,13 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         help="Extra playback delay in milliseconds applied after clock sync",
     )
     target.add_argument(
+        "--player-volume",
+        type=int,
+        default=default,
+        metavar="{0-100}",
+        help="Initial player output volume percentage (0-100)",
+    )
+    target.add_argument(
         "--audio-device",
         type=str,
         default=default,
@@ -409,6 +416,13 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Extra playback delay in milliseconds applied after clock sync",
+    )
+    daemon_parser.add_argument(
+        "--player-volume",
+        type=int,
+        default=None,
+        metavar="{0-100}",
+        help="Initial player output volume percentage (0-100)",
     )
     daemon_parser.add_argument(
         "--audio-device",
@@ -722,6 +736,7 @@ async def _run_daemon_mode(
         client_name=client_name,
         settings=settings,
         static_delay_ms=args.static_delay_ms,
+        player_volume=args.player_volume,
         listen_port=args.listen_port,
         use_mpris=args.use_mpris,
         preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
@@ -833,6 +848,8 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         args.audio_device = settings.audio_device
     if args.static_delay_ms is None and settings.static_delay_ms != 0.0:
         args.static_delay_ms = settings.static_delay_ms
+    if args.player_volume is None:
+        args.player_volume = settings.player_volume
     if args.log_level is None:
         args.log_level = settings.log_level or "INFO"
     if is_daemon and getattr(args, "listen_port", None) is None:
@@ -926,6 +943,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         client_name=client_name,
         settings=settings,
         static_delay_ms=args.static_delay_ms,
+        player_volume=args.player_volume,
         use_mpris=args.use_mpris,
         preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
         volume_controller=volume_controller,
