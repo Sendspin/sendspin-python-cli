@@ -217,6 +217,12 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
     )
     target.add_argument(
+        "--alsa-mixer-control",
+        type=str,
+        default=default,
+        help="ALSA mixer control as CARD:ELEMENT",
+    )
+    target.add_argument(
         "--manufacturer",
         type=str,
         default=default,
@@ -451,6 +457,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=arg_str_to_bool,
         metavar="{true,false}",
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
+    )
+    daemon_parser.add_argument(
+        "--alsa-mixer-control",
+        type=str,
+        default=None,
+        help="ALSA mixer control as CARD:ELEMENT",
     )
     daemon_parser.add_argument(
         "--hook-start",
@@ -845,6 +857,8 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
             args.hardware_volume = settings.use_hardware_volume
         else:
             args.hardware_volume = is_daemon and (HW_VOLUME_AVAILABLE or ALSA_AVAILABLE)
+    if args.alsa_mixer_control is None:
+        args.alsa_mixer_control = settings.alsa_mixer_control
     if args.hook_set_volume is None:
         args.hook_set_volume = settings.hook_set_volume
     if not args.hook_set_volume and args.hardware_volume and not HW_VOLUME_AVAILABLE:
@@ -886,7 +900,9 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         volume_controller = HookVolumeController(args.hook_set_volume, settings)
     elif args.hardware_volume:
         # Try ALSA direct control first (works for hw: devices without PulseAudio).
-        alsa_info = await alsa_volume_check_available(audio_device)
+        alsa_info = await alsa_volume_check_available(
+            audio_device, mixer_control_hint=args.alsa_mixer_control
+        )
         if alsa_info is not None:
             card, element = alsa_info
             LOGGER.info(

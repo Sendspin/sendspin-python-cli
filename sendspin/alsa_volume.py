@@ -182,8 +182,40 @@ async def find_mixer_element(card: int | str) -> str | None:
     return selected
 
 
+async def _check_mixer_control_hint(mixer_control_hint: str) -> tuple[int, str] | None:
+    """Try to resolve an explicit mixer control hint.
+
+    Parses ``card:element``, verifies the element has playback volume,
+    and returns ``(card, element)`` or None.
+    """
+    if ":" not in mixer_control_hint:
+        return None
+    card_part, element = mixer_control_hint.rsplit(":", 1)
+    try:
+        card = int(card_part)
+    except ValueError:
+        return None
+
+    if not await _has_playback_volume(card, element):
+        logger.warning(
+            "Mixer control hint %r (card %d, element %r) has no playback volume",
+            mixer_control_hint,
+            card,
+            element,
+        )
+        return None
+
+    logger.debug(
+        "Using explicit ALSA mixer control: card %d, element %r",
+        card,
+        element,
+    )
+    return card, element
+
+
 async def async_check_alsa_available(
     audio_device: AudioDevice,
+    mixer_control_hint: str | None = None,
 ) -> tuple[int | str, str] | None:
     """Check if ALSA mixer volume control is available for a device.
 
@@ -195,6 +227,11 @@ async def async_check_alsa_available(
     """
     if not AVAILABLE:
         return None
+
+    if mixer_control_hint is not None:
+        resolved = await _check_mixer_control_hint(mixer_control_hint)
+        if resolved is not None:
+            return resolved
 
     card = parse_alsa_card(audio_device.name)
     if card is None and audio_device.name in _BARE_DEFAULT_NAMES:

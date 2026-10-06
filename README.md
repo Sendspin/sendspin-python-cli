@@ -121,6 +121,7 @@ Settings are stored in `~/.config/sendspin/`:
   "listen_port": 8927,
   "use_mpris": true,
   "use_hardware_volume": true,
+  "alsa_mixer_control": "0:Digital",
   "hook_set_volume": "/usr/local/bin/set-avr-volume",
   "manufacturer": "Acme Corp",
   "product_name": "Living Room Speaker",
@@ -154,6 +155,7 @@ Settings are stored in `~/.config/sendspin/`:
 | `listen_port` | integer | daemon/serve | Listen port (`--port`, default: 8927) |
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
 | `use_hardware_volume` | boolean | TUI/daemon | Control hardware/system output volume instead of software volume (`--hardware-volume true/false`). Default: on for daemon (if available), off for TUI |
+| `alsa_mixer_control` | string | TUI/daemon | ALSA mixer control as `CARD:ELEMENT` (e.g., `0:Digital`). Overrides auto-detection (`--alsa-mixer-control`) |
 | `hook_set_volume` | string | TUI/daemon | Script to run for external volume control (`--hook-set-volume`). Receives the effective volume 0-100 as the last argument |
 | `hook_start` | string | TUI/daemon | Command to run when audio stream starts |
 | `hook_stop` | string | TUI/daemon | Command to run when audio stream stops |

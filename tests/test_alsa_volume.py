@@ -634,3 +634,128 @@ async def test_louder_raspberry_get_volume(monkeypatch) -> None:
     volume, muted = await ctrl.get_state()
     assert volume == 57
     assert muted is False
+
+
+# -- _check_mixer_control_hint ------------------------------------------------
+
+
+async def test_check_mixer_control_hint_valid(monkeypatch) -> None:
+    """Returns (card, element) for a valid card:element hint."""
+    from sendspin.alsa_volume import _check_mixer_control_hint
+
+    sget_pvolume = "  Capabilities: pvolume pswitch\n"
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _amixer_exec(sget_pvolume))
+
+    result = await _check_mixer_control_hint("0:Digital")
+    assert result == (0, "Digital")
+
+
+async def test_check_mixer_control_hint_no_colon(monkeypatch) -> None:
+    """Returns None when the hint string has no colon."""
+    from sendspin.alsa_volume import _check_mixer_control_hint
+
+    result = await _check_mixer_control_hint("Digital")
+    assert result is None
+
+
+async def test_check_mixer_control_hint_non_numeric_card(monkeypatch) -> None:
+    """Returns None when the card part is not numeric."""
+    from sendspin.alsa_volume import _check_mixer_control_hint
+
+    result = await _check_mixer_control_hint("sndrpijustboomd:Digital")
+    assert result is None
+
+
+async def test_check_mixer_control_hint_no_playback_volume(monkeypatch) -> None:
+    """Returns None when the element has no playback volume capability."""
+    from sendspin.alsa_volume import _check_mixer_control_hint
+
+    # Element with no volume capability
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", _amixer_exec("  Capabilities: pswitch\n")
+    )
+
+    result = await _check_mixer_control_hint("0:Master")
+    assert result is None
+
+
+async def test_check_mixer_control_hint_amixer_not_found(monkeypatch) -> None:
+    """Returns None when amixer is not found."""
+    from sendspin.alsa_volume import _check_mixer_control_hint
+
+    async def not_found(*args: object, **kwargs: object) -> NoReturn:
+        raise FileNotFoundError("amixer")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", not_found)
+    result = await _check_mixer_control_hint("0:Digital")
+    assert result is None
+
+
+# -- async_check_alsa_available with mixer_control_hint -----------------------
+
+
+async def test_alsa_available_hint_overrides_virtual_device(monkeypatch) -> None:
+    """A hint bypasses auto-detection for virtual devices with no hw: reference."""
+    sget_pvolume = "  Capabilities: pvolume pswitch\n"
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _amixer_exec(sget_pvolume))
+    monkeypatch.setattr(_alsa_mod, "AVAILABLE", True)
+
+    device = SimpleNamespace(name="plugdmix", is_default=False)
+    result = await async_check_alsa_available(device, mixer_control_hint="0:Digital")
+    assert result == (0, "Digital")
+
+
+async def test_alsa_available_hint_falls_back_when_invalid(monkeypatch) -> None:
+    """An invalid hint falls back to auto-detection."""
+    scontrols = "Simple mixer control 'Digital',0\n"
+    sget_pvolume = "  Capabilities: pvolume pswitch\n"
+
+    calls = []
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        calls.append(list(argv))
+        if "scontrols" in argv:
+            return _FakeProcess(stdout=scontrols.encode())
+        return _FakeProcess(stdout=sget_pvolume.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(_alsa_mod, "AVAILABLE", True)
+    device = SimpleNamespace(name="HiFiBerry DAC+: pcm512x (hw:1,0)", is_default=False)
+
+    result = await async_check_alsa_available(device, mixer_control_hint="bad:hint")
+    assert result == (1, "Digital")
+
+
+async def test_alsa_available_hint_element_no_volume_falls_back(monkeypatch) -> None:
+    """A hint with a non-volume element falls back to auto-detection."""
+    scontrols = "Simple mixer control 'Digital',0\n"
+    sget_no_volume = "  Capabilities: pswitch\n"  # no pvolume
+    sget_pvolume = "  Capabilities: pvolume pswitch\n"
+
+    calls = []
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        calls.append(list(argv))
+        if "scontrols" in argv:
+            return _FakeProcess(stdout=scontrols.encode())
+        # First sget (for hint validation) has no volume, second (for discovery) has it
+        if "Master" in argv:
+            return _FakeProcess(stdout=sget_no_volume.encode())
+        return _FakeProcess(stdout=sget_pvolume.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(_alsa_mod, "AVAILABLE", True)
+    device = SimpleNamespace(name="HiFiBerry DAC+: pcm512x (hw:1,0)", is_default=False)
+
+    result = await async_check_alsa_available(device, mixer_control_hint="1:Master")
+    # Hint element has no volume, falls back to auto-detection
+    assert result == (1, "Digital")
+
+
+async def test_alsa_available_hint_not_checked_when_unavailable(monkeypatch) -> None:
+    """Hint is ignored when ALSA is not available on the system."""
+    monkeypatch.setattr(_alsa_mod, "AVAILABLE", False)
+
+    device = SimpleNamespace(name="plugdmix", is_default=False)
+    result = await async_check_alsa_available(device, mixer_control_hint="0:Digital")
+    assert result is None
