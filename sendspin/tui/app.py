@@ -139,6 +139,20 @@ class AppState:
 
         return changed
 
+    def clear_metadata(self) -> bool:
+        """Clear all now-playing metadata and report whether anything changed.
+
+        A bare ``metadata: null`` in a server/state message is a spec-legal
+        clear (an absent field would be ``UndefinedField`` instead), so the
+        previous track must not be left on screen.
+        """
+        changed = False
+        for attr in ("title", "artist", "album", "track_progress", "track_duration"):
+            if getattr(self, attr) is not None:
+                setattr(self, attr, None)
+                changed = True
+        return changed
+
     def describe(self) -> str:
         """Return a human-friendly description of the current state."""
         lines: list[str] = []
@@ -811,7 +825,14 @@ class SendspinApp:
         ui = self._ui
         if isinstance(payload.metadata, UndefinedField):
             return
-        if payload.metadata is None or not state.update_metadata(payload.metadata):
+        if payload.metadata is None:
+            # A bare ``metadata: null`` is a spec-legal clear -- an absent field
+            # is UndefinedField and handled above -- so drop the stale
+            # now-playing fields instead of leaving the previous track on screen.
+            changed = state.clear_metadata()
+        else:
+            changed = state.update_metadata(payload.metadata)
+        if not changed:
             return
 
         with ui.batch_update():
