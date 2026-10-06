@@ -544,3 +544,31 @@ def test_pitch_arrow_on_separate_line_below_f_peak() -> None:
     pitch_row = next(i for i, row in enumerate(rows) if "▲" in row.plain)
     assert f_peak_row < pitch_row
     assert "▲" not in rows[f_peak_row].plain
+
+
+# --- VisualizerState activity tests ---
+
+
+def test_visualizer_state_idle_without_data() -> None:
+    state = VisualizerState()
+    assert state.is_active is False
+
+
+def test_visualizer_state_settles_to_idle_after_frame() -> None:
+    """is_active goes False once interpolation settles, so the refresh loop idles.
+
+    Previously this stayed True forever because the target list was non-empty,
+    so a paused stream kept the whole layout re-rendering at the frame interval.
+    """
+    state = VisualizerState()
+    state.update([65535, 65535], loudness=65535)
+    assert state.is_active is True
+
+    with patch("sendspin.tui.visualizer.time") as mock_time:
+        base = time.monotonic()
+        for i in range(1, 200):
+            mock_time.monotonic.return_value = base + i * 0.05
+            state.step()
+
+    assert state.is_active is False
+    assert state.get_spectrum() == [1.0, 1.0]

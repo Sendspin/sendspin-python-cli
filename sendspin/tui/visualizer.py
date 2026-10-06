@@ -37,6 +37,10 @@ _BLOCK_LEVELS = len(_BLOCKS) - 1  # 8
 # Interpolation response speed in units per second.
 _SMOOTH_RATE_PER_SECOND = 14.0
 
+# Values closer than this are treated as settled, letting the periodic refresh
+# loop idle once a frame's interpolation and the peak decay have finished.
+_SETTLE_EPSILON = 1e-3
+
 # Peak hold configuration
 _PEAK_HOLD_SECONDS = 0.5
 _PEAK_FALL_RATE = 0.375  # normalized units per second (≈6 rows/sec at 16 rows)
@@ -222,8 +226,27 @@ class VisualizerState:
 
     @property
     def is_active(self) -> bool:
-        """Whether there is pending visualizer data to animate."""
-        return bool(self._spectrum_target)
+        """Whether the visualizer is still animating toward its target.
+
+        True only while the smoothed values have not settled, so the refresh
+        loop idles once interpolation and the peak decay finish -- including
+        when playback pauses and no further frames arrive.
+        """
+        if len(self._spectrum) != len(self._spectrum_target):
+            return True
+        if len(self._peaks) != len(self._spectrum):
+            return True
+        if abs(self._loudness - self._loudness_target) > _SETTLE_EPSILON:
+            return True
+        if any(
+            abs(current - target) > _SETTLE_EPSILON
+            for current, target in zip(self._spectrum, self._spectrum_target, strict=True)
+        ):
+            return True
+        return any(
+            abs(peak - bar) > _SETTLE_EPSILON
+            for peak, bar in zip(self._peaks, self._spectrum, strict=True)
+        )
 
     def step(self) -> None:
         """Advance displayed values toward targets.
