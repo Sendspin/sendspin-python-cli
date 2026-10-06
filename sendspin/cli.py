@@ -33,10 +33,12 @@ from sendspin.settings import (
 from sendspin.volume_controller import VolumeController
 
 if TYPE_CHECKING:
+    from aiosendspin.client import SendspinClient
     from aiosendspin.models.player import SupportedAudioFormat
     from aiosendspin.noise import ClientPairingStore, Identity
 
     from sendspin.audio_devices import AudioDevice
+    from sendspin.source_stream import SourceStreamer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ Please install PortAudio for your system:
 
 PLAYER_APP_SENTINEL = "player"
 EXPLICIT_APPS = frozenset(
-    {PLAYER_APP_SENTINEL, "daemon", "serve", "audio-devices", "servers", "clients"}
+    {PLAYER_APP_SENTINEL, "daemon", "serve", "source", "audio-devices", "servers", "clients"}
 )
 TOP_LEVEL_ACTIONS = frozenset({"-h", "--help", "--version"})
 
@@ -144,6 +146,38 @@ def list_audio_devices() -> None:
                 print()
                 for name, description in recommended:
                     print(f"  {name:<12} {description}")
+
+
+def list_input_devices() -> None:
+    """List all available audio input (capture) devices."""
+    try:
+        from sendspin.audio_devices import query_input_devices
+    except OSError as e:
+        if "PortAudio library not found" in str(e):
+            print(PORTAUDIO_NOT_FOUND_MESSAGE)
+            sys.exit(1)
+        raise
+
+    try:
+        devices = query_input_devices()
+    except OSError as e:
+        if "PortAudio library not found" in str(e):
+            print(PORTAUDIO_NOT_FOUND_MESSAGE)
+            sys.exit(1)
+        raise
+
+    print("Available audio input devices:")
+    print()
+    for device in devices:
+        default_marker = " (default)" if device.is_default else ""
+        print(
+            f"  [{device.index}] {device.name}{default_marker}\n"
+            f"       Channels: {device.input_channels}, "
+            f"Sample rate: {device.sample_rate} Hz"
+        )
+    if devices:
+        default = next((d for d in devices if d.is_default), devices[0])
+        print(f"\nTo capture from an input device:\n  sendspin source --device {default.index}")
 
 
 def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bool = False) -> None:
@@ -283,6 +317,92 @@ def _add_player_actions(target: ArgumentTarget, *, suppress_defaults: bool = Fal
         action="store_true",
         default=argparse.SUPPRESS if suppress_defaults else False,
         help=argparse.SUPPRESS,
+    )
+
+
+def _add_source_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """Add the ``source`` app parser (capture a local input into Sendspin)."""
+    source_parser = subparsers.add_parser(
+        "source",
+        help="Capture a local audio input and stream it to a server",
+        description=(
+            "Run as a Sendspin source client: capture audio from a local input "
+            "(line-in/microphone, or a synthetic sine test tone) and stream it to a "
+            "server, which mixes and distributes it to players. The server decides "
+            "when the source starts and stops streaming."
+        ),
+    )
+    source_parser.add_argument(
+        "--url",
+        default=None,
+        help="WebSocket URL of the server. If omitted, the first discovered server is used.",
+    )
+    source_parser.add_argument("--name", default=None, help="Friendly name for this source client")
+    source_parser.add_argument(
+        "--id", default=None, help="Unique identifier for this source client"
+    )
+    source_parser.add_argument(
+        "--input",
+        dest="source_input",
+        choices=["sine", "linein"],
+        default=None,
+        help="Capture source: 'linein' (real input device) or 'sine' (test tone)",
+    )
+    source_parser.add_argument(
+        "--device",
+        dest="source_device",
+        default=None,
+        help="Input device index or name (see 'sendspin audio-devices inputs')",
+    )
+    source_parser.add_argument(
+        "--codec",
+        dest="source_codec",
+        choices=["pcm", "opus", "flac"],
+        default=None,
+        help="Codec to encode captured audio with (default: pcm)",
+    )
+    source_parser.add_argument(
+        "--sample-rate",
+        dest="source_sample_rate",
+        type=int,
+        default=None,
+        help="Capture sample rate in Hz",
+    )
+    source_parser.add_argument(
+        "--channels", dest="source_channels", type=int, default=None, help="Capture channel count"
+    )
+    source_parser.add_argument(
+        "--frame-ms", dest="source_frame_ms", type=int, default=20, help="Capture frame size in ms"
+    )
+    source_parser.add_argument(
+        "--sine-hz",
+        dest="source_sine_hz",
+        type=float,
+        default=440.0,
+        help="Sine test-tone frequency",
+    )
+    source_parser.add_argument(
+        "--signal-threshold-db",
+        dest="source_signal_threshold_db",
+        type=float,
+        default=-50.0,
+        help="RMS threshold (dBFS) for line-sense signal detection",
+    )
+    source_parser.add_argument(
+        "--line-sense",
+        action="store_true",
+        help="Report line-sensing signal presence to the server via client/state",
+    )
+    source_parser.add_argument(
+        "--settings-dir",
+        default=None,
+        help="Directory to store settings (default: ~/.config/sendspin)",
+    )
+    source_parser.add_argument(
+        "--log-level",
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level to use (default: INFO)",
     )
 
 
@@ -494,6 +614,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # Source subcommand
+    _add_source_parser(subparsers)
+
     # audio-devices subcommand
     audio_devices_parser = subparsers.add_parser(
         "audio-devices",
@@ -509,6 +632,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "list",
         help="List available audio output devices",
         description="List all available audio output devices and exit.",
+    )
+    audio_devices_sub.add_parser(
+        "inputs",
+        help="List available audio input (capture) devices",
+        description="List all available audio input (capture) devices and exit.",
     )
 
     # servers subcommand
@@ -701,6 +829,131 @@ async def _run_serve_mode(args: argparse.Namespace) -> int:
     return await run_server(serve_config)
 
 
+async def _discover_first_server_url() -> str | None:
+    """Discover Sendspin servers and return the first URL, or None if none found."""
+    from sendspin.discovery import discover_servers
+
+    servers = await discover_servers(discovery_time=3.0)
+    if not servers:
+        return None
+    return servers[0].url
+
+
+async def _source_connection_loop(
+    client: SendspinClient,
+    url: str,
+    streamer: SourceStreamer,
+) -> None:
+    """Connect to the server with reconnect, resetting streaming on each drop."""
+    from aiohttp import ClientError
+
+    error_backoff = 1.0
+    max_backoff = 300.0
+    while True:
+        try:
+            await client.connect(url)
+            error_backoff = 1.0
+            disconnect_event: asyncio.Event = asyncio.Event()
+            unsubscribe = client.add_disconnect_listener(disconnect_event.set)
+            await disconnect_event.wait()
+            unsubscribe()
+            streamer.reset()
+            LOGGER.info("Disconnected from server; reconnecting to %s", url)
+        except (TimeoutError, OSError, ClientError) as e:
+            LOGGER.warning(
+                "Connection error (%s), retrying in %.0fs", type(e).__name__, error_backoff
+            )
+            await asyncio.sleep(error_backoff)
+            error_backoff = min(error_backoff * 2, max_backoff)
+
+
+async def _run_source_mode(args: argparse.Namespace) -> int:
+    """Run as a source client: capture a local input and stream it to a server."""
+    from aiosendspin.client import SendspinClient as _SendspinClient
+    from aiosendspin.models.source import (
+        ClientHelloSourceSupport,
+        SourceFeatures,
+    )
+    from aiosendspin.models.types import AudioCodec, Roles
+
+    from sendspin.settings import get_source_settings
+    from sendspin.source_stream import SourceStreamConfig, SourceStreamer
+
+    settings = await get_source_settings(args.settings_dir)
+
+    url = args.url or settings.last_server_url
+    input_kind = args.source_input or settings.source_input
+    device = args.source_device or settings.source_device
+    codec_str = args.source_codec or settings.source_codec
+    sample_rate = args.source_sample_rate or settings.source_sample_rate
+    channels = args.source_channels or settings.source_channels
+    log_level = args.log_level or settings.log_level or "INFO"
+    logging.basicConfig(level=getattr(logging, log_level))
+
+    # A device implies real line-in capture unless the user asked for the sine tone.
+    if device is not None and args.source_input is None:
+        input_kind = "linein"
+
+    if url is None:
+        LOGGER.info("No --url given; discovering servers...")
+        url = await _discover_first_server_url()
+        if url is None:
+            print("No Sendspin server found. Provide --url or start a server.")
+            return 1
+        print(f"Using discovered server: {url}")
+
+    client_id, client_name = _resolve_client_info(args.id or settings.client_id, args.name)
+    codec = AudioCodec(codec_str)
+
+    config = SourceStreamConfig(
+        codec=codec,
+        input_kind=input_kind,
+        device=device,
+        sample_rate=sample_rate,
+        channels=channels,
+        frame_ms=args.source_frame_ms,
+        sine_hz=args.source_sine_hz,
+        signal_threshold_db=args.source_signal_threshold_db,
+        line_sense=args.line_sense,
+    )
+    # The capture format is announced per stream in client_stream/start; there is
+    # no format negotiation in client/hello.
+    support = ClientHelloSourceSupport(features=SourceFeatures(line_sense=args.line_sense))
+    client = _SendspinClient(
+        client_id=client_id,
+        client_name=client_name,
+        roles=[Roles.SOURCE],
+        source_support=support,
+    )
+    streamer = SourceStreamer(client, config)
+    client.add_source_command_listener(streamer.handle_source_command)
+
+    settings.update(
+        client_id=client_id,
+        name=client_name,
+        last_server_url=url,
+        source_input=input_kind,
+        source_device=device,
+        source_codec=codec_str,
+        source_sample_rate=sample_rate,
+        source_channels=channels,
+    )
+
+    LOGGER.info("Source client '%s' -> %s (%s, %s)", client_id, url, input_kind, codec.value)
+    capture_task = asyncio.create_task(streamer.run())
+    try:
+        await _source_connection_loop(client, url, streamer)
+    finally:
+        capture_task.cancel()
+        try:
+            await capture_task
+        except asyncio.CancelledError:
+            pass
+        await client.disconnect()
+        await settings.flush()
+    return 0
+
+
 async def _run_daemon_mode(
     args: argparse.Namespace,
     settings: ClientSettings,
@@ -754,10 +1007,28 @@ def main() -> int:
             traceback.print_exc()
             return 1
 
+    # Handle source subcommand
+    if args.command == "source":
+        try:
+            return asyncio.run(_run_source_mode(args))
+        except KeyboardInterrupt:
+            return 0
+        except CLIError as e:
+            print(f"Error: {e}")
+            return e.exit_code
+        except OSError as e:
+            if "PortAudio library not found" in str(e):
+                print(PORTAUDIO_NOT_FOUND_MESSAGE)
+                return 1
+            raise
+
     # Handle utility subcommands
     if args.command == "audio-devices":
         if args.audio_devices_command == "list":
             list_audio_devices()
+            return 0
+        if args.audio_devices_command == "inputs":
+            list_input_devices()
             return 0
 
     if args.command == "servers":
