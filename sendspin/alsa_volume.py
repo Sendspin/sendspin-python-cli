@@ -99,6 +99,16 @@ async def _has_playback_volume(card: int | str, element: str) -> bool:
     USB interfaces) and ``volume`` (used by TAS58xx-based amplifier HATs such
     as the Sonocotta Louder Raspberry — reported as ``volume`` in stereo mode
     or ``volume volume-joined`` in mono mode).
+
+    The bare ``volume`` capability is ambiguous: ALSA also tags bidirectional
+    analog gain stages with it when a codec driver registers them via
+    SOC_SINGLE_TLV/SOC_DOUBLE_TLV without a "Playback"/"Capture" qualifier in
+    the control name (e.g. RT5616's "ADC Boost", "IN1 Boost", "IN2 Boost" — all
+    capture-side mic/line boost gain, disconnected from the playback chain).
+    Such elements report both a ``Playback channels:`` and a ``Capture
+    channels:`` line. A bare ``volume`` match is therefore only accepted when
+    the element is genuinely output-only (no ``Capture channels:`` line), which
+    is the real TAS58xx case. The unambiguous ``pvolume`` branch is unaffected.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -116,8 +126,11 @@ async def _has_playback_volume(card: int | str, element: str) -> bool:
         return False
     if proc.returncode != 0:
         return False
-    caps = set(stdout.decode().split())
-    return "pvolume" in caps or "volume" in caps
+    output = stdout.decode()
+    caps = set(output.split())
+    if "pvolume" in caps:
+        return True
+    return "volume" in caps and "Capture channels:" not in output
 
 
 async def find_mixer_element(card: int | str) -> str | None:

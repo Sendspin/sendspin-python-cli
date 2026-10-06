@@ -11,6 +11,7 @@ import sendspin.audio_devices as _audio_devices_mod
 import sendspin.alsa_volume as _alsa_mod
 from sendspin.alsa_volume import (
     AlsaVolumeController,
+    _has_playback_volume,
     async_check_alsa_available,
     find_mixer_element,
     parse_alsa_card,
@@ -634,3 +635,143 @@ async def test_louder_raspberry_get_volume(monkeypatch) -> None:
     volume, muted = await ctrl.get_state()
     assert volume == 57
     assert muted is False
+
+
+# -- Realtek RT5616 analog codec (NanoPC-T6 / RK3588) -------------------------
+# The mainline RT5616 codec driver registers several capture-side analog boost
+# gain stages ("ADC Boost", "IN1 Boost", "IN2 Boost") with bare `volume`
+# capability and *both* Playback and Capture channels. These must NOT be
+# detected as playback-volume controls — they are disconnected from the
+# playback chain and adjusting them has zero effect on output loudness.
+# The genuine playback elements (DAC1, HP, OUT) all carry `pvolume`.
+
+# False positives: capture-side boost/preamp gain tagged with bare `volume`
+# plus a `Capture channels:` line.
+_RT5616_SGET_ADC_BOOST = (
+    "Simple mixer control 'ADC Boost',0\n"
+    "  Capabilities: volume\n"
+    "  Playback channels: Front Left - Front Right\n"
+    "  Capture channels: Front Left - Front Right\n"
+    "  Limits: 0 - 3\n"
+    "  Front Left: 0 [0%] [0.00dB]\n"
+    "  Front Right: 0 [0%] [0.00dB]\n"
+)
+
+_RT5616_SGET_IN1_BOOST = (
+    "Simple mixer control 'IN1 Boost',0\n"
+    "  Capabilities: volume volume-joined\n"
+    "  Playback channels: Mono\n"
+    "  Capture channels: Mono\n"
+    "  Limits: 0 - 8\n"
+    "  Mono: 0 [0%] [0.00dB]\n"
+)
+
+_RT5616_SGET_IN2_BOOST = (
+    "Simple mixer control 'IN2 Boost',0\n"
+    "  Capabilities: volume volume-joined\n"
+    "  Playback channels: Mono\n"
+    "  Capture channels: Mono\n"
+    "  Limits: 0 - 8\n"
+    "  Mono: 0 [0%] [0.00dB]\n"
+)
+
+# Capture-only control: already correctly excluded (cvolume, no playback).
+_RT5616_SGET_ADC = (
+    "Simple mixer control 'ADC',0\n"
+    "  Capabilities: cvolume cswitch\n"
+    "  Capture channels: Front Left - Front Right\n"
+    "  Limits: Capture 0 - 127\n"
+    "  Front Left: Capture 47 [37%] [0.00dB] [on]\n"
+    "  Front Right: Capture 47 [37%] [0.00dB] [on]\n"
+)
+
+# True playback-volume elements (must remain detected).
+_RT5616_SGET_DAC1 = (
+    "Simple mixer control 'DAC1',0\n"
+    "  Capabilities: pvolume\n"
+    "  Playback channels: Front Left - Front Right\n"
+    "  Limits: Playback 0 - 175\n"
+    "  Front Left: Playback 175 [100%] [0.00dB]\n"
+    "  Front Right: Playback 175 [100%] [0.00dB]\n"
+)
+
+_RT5616_SGET_HP = (
+    "Simple mixer control 'HP',0\n"
+    "  Capabilities: pvolume pswitch\n"
+    "  Playback channels: Front Left - Front Right\n"
+    "  Limits: Playback 0 - 39\n"
+    "  Front Left: Playback 39 [100%] [0.00dB] [on]\n"
+    "  Front Right: Playback 39 [100%] [0.00dB] [on]\n"
+)
+
+_RT5616_SGET_OUT = (
+    "Simple mixer control 'OUT',0\n"
+    "  Capabilities: pvolume pswitch\n"
+    "  Playback channels: Front Left - Front Right\n"
+    "  Limits: Playback 0 - 39\n"
+    "  Front Left: Playback 39 [100%] [0.00dB] [on]\n"
+    "  Front Right: Playback 39 [100%] [0.00dB] [on]\n"
+)
+
+# Enumeration order as reported by `amixer -c2 scontrols`: the capture-side
+# boost stages enumerate *before* the real playback elements, which is what
+# previously caused "ADC Boost" to win.
+_RT5616_SCONTROLS = (
+    "Simple mixer control 'ADC Boost',0\n"
+    "Simple mixer control 'IN1 Boost',0\n"
+    "Simple mixer control 'IN2 Boost',0\n"
+    "Simple mixer control 'ADC',0\n"
+    "Simple mixer control 'DAC1',0\n"
+    "Simple mixer control 'HP',0\n"
+    "Simple mixer control 'OUT',0\n"
+)
+
+_RT5616_SGET_BY_ELEMENT = {
+    "ADC Boost": _RT5616_SGET_ADC_BOOST,
+    "IN1 Boost": _RT5616_SGET_IN1_BOOST,
+    "IN2 Boost": _RT5616_SGET_IN2_BOOST,
+    "ADC": _RT5616_SGET_ADC,
+    "DAC1": _RT5616_SGET_DAC1,
+    "HP": _RT5616_SGET_HP,
+    "OUT": _RT5616_SGET_OUT,
+}
+
+
+def _rt5616_exec() -> _AmixerExecFactory:
+    """Build a fake amixer exec over the full RT5616 control set."""
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        if "scontrols" in argv:
+            return _FakeProcess(stdout=_RT5616_SCONTROLS.encode())
+        for element, output in _RT5616_SGET_BY_ELEMENT.items():
+            if element in argv:
+                return _FakeProcess(stdout=output.encode())
+        return _FakeProcess(stdout=b"")
+
+    return fake_exec
+
+
+@pytest.mark.parametrize(
+    "element",
+    ["ADC", "ADC Boost", "IN1 Boost", "IN2 Boost"],
+)
+async def test_rt5616_rejects_capture_side_controls(monkeypatch, element: str) -> None:
+    """Capture-side boost gain (bare `volume` + Capture channels) is rejected."""
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _rt5616_exec())
+    assert await _has_playback_volume(2, element) is False
+
+
+@pytest.mark.parametrize(
+    "element",
+    ["DAC1", "HP", "OUT"],
+)
+async def test_rt5616_accepts_playback_controls(monkeypatch, element: str) -> None:
+    """Genuine pvolume playback elements remain detected."""
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _rt5616_exec())
+    assert await _has_playback_volume(2, element) is True
+
+
+async def test_rt5616_find_mixer_element_returns_dac1(monkeypatch) -> None:
+    """find_mixer_element picks DAC1, not the earlier-enumerated 'ADC Boost'."""
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _rt5616_exec())
+    assert await find_mixer_element(2) == "DAC1"
