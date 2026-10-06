@@ -14,6 +14,7 @@ from aiohttp import ClientError, web
 from aiosendspin.client import ClientListener, PairingSupport, SendspinClient
 from aiosendspin.models.core import GroupUpdateServerPayload, ServerCommandPayload
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
+from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
 from aiosendspin.models.types import (
     Activity,
@@ -433,7 +434,21 @@ class SendspinDaemon:
 
                 logger.info("Reconnecting to %s", url)
 
-            except (TimeoutError, OSError, ClientError) as e:
+            except (
+                TimeoutError,
+                OSError,
+                ClientError,
+                RuntimeError,
+                HandshakeAbortedError,
+            ) as e:
+                # Retry only the connection-failure set aiosendspin's own
+                # client uses (HandshakeAbortedError, OSError, RuntimeError,
+                # TimeoutError). RuntimeError covers "server activation
+                # rejected" / "connection closed before admission". Anything
+                # outside this set is a genuine bug and is left to propagate,
+                # so the daemon exits non-zero and the shipped systemd unit
+                # (Restart=on-failure) restarts it instead of the process
+                # dying silently with exit code 0.
                 logger.warning(
                     "Connection error (%s), retrying in %.0fs",
                     type(e).__name__,
@@ -442,10 +457,6 @@ class SendspinDaemon:
 
                 await asyncio.sleep(error_backoff)
                 error_backoff = min(error_backoff * 2, max_backoff)
-
-            except Exception:
-                logger.exception("Unexpected error during connection")
-                break
 
     def _handle_server_command(self, payload: ServerCommandPayload) -> None:
         """Handle server commands for player volume/mute control."""
