@@ -80,6 +80,38 @@ def query_devices() -> list[AudioDevice]:
     return result
 
 
+@dataclass(slots=True)
+class InputDevice:
+    """Represents an audio input (capture) device."""
+
+    index: int
+    name: str
+    input_channels: int
+    sample_rate: float
+    is_default: bool
+
+
+def query_input_devices() -> list[InputDevice]:
+    """Query all available audio input (capture) devices."""
+    devices = sounddevice.query_devices()
+    default_input = int(sounddevice.default.device[0])
+
+    result: list[InputDevice] = []
+    for i in range(len(devices)):
+        dev = devices[i]
+        if dev["max_input_channels"] > 0:
+            result.append(
+                InputDevice(
+                    index=i,
+                    name=str(dev["name"]),
+                    input_channels=int(dev["max_input_channels"]),
+                    sample_rate=float(dev["default_samplerate"]),
+                    is_default=(i == default_input),
+                )
+            )
+    return result
+
+
 def _check_format(device: AudioDevice, rate: int, channels: int, dtype: str) -> bool:
     """Check if a specific audio format is supported by the device."""
     try:
