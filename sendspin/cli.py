@@ -916,7 +916,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         if alsa_info is not None:
             card, element = alsa_info
             LOGGER.info(
-                "Using ALSA mixer volume control: card %d, element %r",
+                "Using ALSA mixer volume control: card %r, element %r",
                 card,
                 element,
             )
