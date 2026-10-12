@@ -129,6 +129,7 @@ class ClientSettings(BaseSettings):
     use_mpris: bool = True
     audio_format: str | None = None
     use_hardware_volume: bool | None = None
+    unpaired_access: bool = True
     hook_set_volume: str | None = None
     hook_start: str | None = None
     hook_stop: str | None = None
@@ -228,6 +229,7 @@ class ClientSettings(BaseSettings):
             self.use_mpris = data.get("use_mpris", True)
             self.audio_format = data.get("audio_format")
             self.use_hardware_volume = data.get("use_hardware_volume")
+            self.unpaired_access = data.get("unpaired_access", True)
             self.hook_set_volume = data.get("hook_set_volume")
             self.hook_start = data.get("hook_start")
             self.hook_stop = data.get("hook_stop")
