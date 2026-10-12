@@ -121,6 +121,7 @@ Settings are stored in `~/.config/sendspin/`:
   "listen_port": 8927,
   "use_mpris": true,
   "use_hardware_volume": true,
+  "unpaired_access": true,
   "hook_set_volume": "/usr/local/bin/set-avr-volume",
   "manufacturer": "Acme Corp",
   "product_name": "Living Room Speaker",
@@ -154,6 +155,7 @@ Settings are stored in `~/.config/sendspin/`:
 | `listen_port` | integer | daemon/serve | Listen port (`--port`, default: 8927) |
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
 | `use_hardware_volume` | boolean | TUI/daemon | Control hardware/system output volume instead of software volume (`--hardware-volume true/false`). Default: on for daemon (if available), off for TUI |
+| `unpaired_access` | boolean | TUI/daemon | Allow servers to play on this client without pairing (`--unpaired-access true/false`, default: true). See [Pairing](#pairing) |
 | `hook_set_volume` | string | TUI/daemon | Script to run for external volume control (`--hook-set-volume`). Receives the effective volume 0-100 as the last argument |
 | `hook_start` | string | TUI/daemon | Command to run when audio stream starts |
 | `hook_stop` | string | TUI/daemon | Command to run when audio stream stops |
@@ -192,12 +194,18 @@ same server don't require pairing again.
   pairing completes.
 - **Daemon**: the PIN is only logged (`Pairing required: enter PIN ...`) — there's no other
   surface for it. You need to be watching the daemon's output at the moment it first
-  connects to a new server. Under systemd, that means `journalctl -u sendspin -f`. There's
-  no unattended-pairing option today (no PIN written to a file, no QR code); for a headless
-  install, plan to watch the log during first setup for each new server.
+  connects to a new server. Under systemd, that means `journalctl -u sendspin -f`. For a
+  headless install with unpaired access turned off, plan to watch the log during first setup
+  for each new server.
 
 If a pairing attempt fails (e.g. a mismatched PIN), the client logs the reason and you
 can retry by reconnecting.
+
+Unpaired access is on by default, so servers can play on this client without a PIN once
+the server approves it (Music Assistant does this automatically). Unpaired connections are
+still encrypted, but another device on the network could impersonate either side. To
+require pairing, use `--unpaired-access false` (or `"unpaired_access": false` in the
+settings file).
 
 **Upgrading from a version before pairing support:** this client's protocol identity
 (`client_id`) used to be a stable, often user-chosen string; it's now derived from a

@@ -10,6 +10,7 @@ import socket
 import sys
 import traceback
 from collections.abc import Sequence
+from dataclasses import replace
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -215,6 +216,13 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         type=arg_str_to_bool,
         metavar="{true,false}",
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
+    )
+    target.add_argument(
+        "--unpaired-access",
+        default=default,
+        type=arg_str_to_bool,
+        metavar="{true,false}",
+        help="Allow servers to play on this client without pairing (default: true)",
     )
     target.add_argument(
         "--manufacturer",
@@ -451,6 +459,13 @@ def _build_parser() -> argparse.ArgumentParser:
         type=arg_str_to_bool,
         metavar="{true,false}",
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
+    )
+    daemon_parser.add_argument(
+        "--unpaired-access",
+        default=None,
+        type=arg_str_to_bool,
+        metavar="{true,false}",
+        help="Allow servers to play on this client without pairing (default: true)",
     )
     daemon_parser.add_argument(
         "--hook-start",
@@ -865,6 +880,10 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         args.product_name = settings.product_name
     if args.interface is None:
         args.interface = settings.interface
+    if args.unpaired_access is None:
+        args.unpaired_access = settings.unpaired_access
+        if not isinstance(args.unpaired_access, bool):
+            raise CLIError("unpaired_access in the settings file must be true or false", 1)
 
     # Set up logging: daemon uses stderr, TUI writes to sendspin.log
     # so log output doesn't interfere with the Rich display.
@@ -877,6 +896,13 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         handler = logging.FileHandler(os.path.join(os.getcwd(), "sendspin.log"), delay=True)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.basicConfig(level=log_level, handlers=[handler])
+
+    pairing_config = await pairing_store.get_pairing_config()
+    if pairing_config.unpaired_access_enabled != args.unpaired_access:
+        await pairing_store.store_pairing_config(
+            replace(pairing_config, unpaired_access_enabled=args.unpaired_access)
+        )
+        LOGGER.info("Unpaired access %s", "enabled" if args.unpaired_access else "disabled")
 
     audio_device = resolve_audio_device(args.audio_device)
 
