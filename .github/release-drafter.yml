@@ -17,14 +17,15 @@ categories:
 
   - title: "🧰 Maintenance"
     labels:
+      - "refactor"
+      - "documentation"
       - "ci"
       - "maintenance"
 
-  - title: "⬆️ Dependencies and CI"
+  - title: "⬆️ Dependencies"
     collapse-after: 1
     labels:
       - "dependencies"
-      - "ci"
 template: |
   ## What’s Changed
 
