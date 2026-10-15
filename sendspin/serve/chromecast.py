@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 SENDSPIN_CAST_APP_ID = "938CBF87"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 
+# Upper bound on the blocking Chromecast discovery/connection step.
+_CONNECT_TIMEOUT_SECONDS = 15.0
+
 
 @dataclass
 class ChromecastClient:
@@ -83,11 +86,16 @@ async def connect_to_chromecast(
     loop = asyncio.get_running_loop()
 
     # Connect to Chromecast (blocking call, run in executor)
+    browsers: list[Any] = []
+
     def _connect() -> pychromecast.Chromecast:
         chromecasts, browser = pychromecast.get_chromecasts(
             known_hosts=[host],
             zeroconf_instance=zeroconf,
         )
+        # Keep a handle to the browser: asyncio.wait_for() below cannot cancel
+        # this executor thread, so the timeout path needs it to stop discovery.
+        browsers.append(browser)
 
         try:
             # Find the Chromecast matching our target host
@@ -104,9 +112,14 @@ async def connect_to_chromecast(
     try:
         cast = await asyncio.wait_for(
             loop.run_in_executor(None, _connect),
-            timeout=15.0,
+            timeout=_CONNECT_TIMEOUT_SECONDS,
         )
     except TimeoutError as e:
+        # wait_for() cannot cancel a running executor thread, so the blocking
+        # discovery may still be in flight. Stop its zeroconf browser here;
+        # otherwise it (with its sockets and threads) outlives the failure.
+        for browser in browsers:
+            browser.stop_discovery()
         raise TimeoutError(f"Timeout connecting to Chromecast at {host}") from e
 
     friendly_name = cast.cast_info.friendly_name or f"Chromecast ({host})"
