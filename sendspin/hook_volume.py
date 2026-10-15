@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on a single volume-hook invocation. A hook that hangs (a busy or
+# wedged ALSA device, a script waiting on input) must not wedge the caller
+# forever or leak its child process.
+_HOOK_TIMEOUT_SECONDS = 10.0
+
 
 class HookVolumeController:
     """Controls external volume via a user-provided script.
@@ -50,7 +55,17 @@ class HookVolumeController:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_HOOK_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(
+                f"Volume hook timed out after {_HOOK_TIMEOUT_SECONDS:.0f}s: {' '.join(self._argv)}"
+            ) from None
+
         if proc.returncode != 0:
             raise RuntimeError(
                 "Volume hook failed "
