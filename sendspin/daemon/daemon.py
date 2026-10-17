@@ -84,6 +84,7 @@ class SendspinDaemon:
         self._static_delay_ms: float = 0.0
         self._connection_lock: asyncio.Lock | None = None
         self._server_url: str | None = None
+        self._admission_timeout_logged: bool = False
         self._group_update_unsubscribe: Callable[[], None] | None = None
         self._server_command_unsubscribe: Callable[[], None] | None = None
         self._pairing_abort_unsubscribe: Callable[[], None] | None = None
@@ -356,11 +357,26 @@ class SendspinDaemon:
             if exc is not None:
                 logger.warning("Handshake with server failed: %s", exc)
             else:
-                logger.info(
-                    "Incoming connection did not complete admission "
-                    "(handshake timed out or was aborted); waiting for a retry."
-                )
+                # Admission timeouts recur on every reconnect while a server
+                # keeps redialing, so log the first at info (an unadmitted
+                # connection would otherwise be fully silent) and repeats at
+                # debug. The flag resets below once a connection is admitted.
+                if not self._admission_timeout_logged:
+                    logger.info(
+                        "Incoming connection did not complete admission "
+                        "(handshake timed out or was aborted); waiting for a retry."
+                    )
+                    self._admission_timeout_logged = True
+                else:
+                    logger.debug(
+                        "Incoming connection did not complete admission "
+                        "(handshake timed out or was aborted); waiting for a retry."
+                    )
             return
+
+        # Reaching here means the connection was admitted: re-arm the
+        # first-time info log so a later wedged spell is visible again.
+        self._admission_timeout_logged = False
 
         # Lock ensures we wait for any in-progress handshake to complete
         # before disconnecting the previous server
