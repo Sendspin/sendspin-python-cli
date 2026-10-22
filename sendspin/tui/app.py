@@ -140,12 +140,7 @@ class AppState:
         return changed
 
     def clear_metadata(self) -> bool:
-        """Clear all now-playing metadata and report whether anything changed.
-
-        A bare ``metadata: null`` in a server/state message is a spec-legal
-        clear (an absent field would be ``UndefinedField`` instead), so the
-        previous track must not be left on screen.
-        """
+        """Clear all now-playing metadata and report whether anything changed."""
         changed = False
         for attr in ("title", "artist", "album", "track_progress", "track_duration"):
             if getattr(self, attr) is not None:
