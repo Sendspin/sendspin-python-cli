@@ -48,6 +48,7 @@ from aiosendspin.models.visualizer import (
     ClientHelloVisualizerSupport,
     StreamStartVisualizer,
     VisualizerFrame,
+    VisualizerStatePayload,
 )
 from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
 from PIL.Image import Image as PILImage
@@ -293,8 +294,12 @@ class SendspinApp:
     @staticmethod
     def _build_visualizer_support() -> ClientHelloVisualizerSupport:
         """Build visualizer support payload for client/hello (visualizer@v1)."""
-        return ClientHelloVisualizerSupport(
-            buffer_capacity=65536,
+        return ClientHelloVisualizerSupport(buffer_capacity=65536)
+
+    @staticmethod
+    def _build_visualizer_state() -> VisualizerStatePayload:
+        """Build the visualizer stream configuration requested in client/state."""
+        return VisualizerStatePayload(
             types=["loudness", "spectrum", "beat", "peak", "f_peak"],
             rate_max=30,
             spectrum=ClientHelloVisualizerSpectrum(
@@ -310,8 +315,10 @@ class SendspinApp:
         args = self._args
         roles = [Roles.CONTROLLER, Roles.PLAYER, Roles.METADATA, Roles.COLOR]
         visualizer_support = None
+        visualizer_state = None
         if self._visualizer_enabled:
             visualizer_support = self._build_visualizer_support()
+            visualizer_state = self._build_visualizer_state()
             roles.append(Roles.VISUALIZER)
 
         artwork_channels: list[ArtworkChannel] | None = None
@@ -336,6 +343,7 @@ class SendspinApp:
                 buffer_capacity=32_000_000,
             ),
             visualizer_support=visualizer_support,
+            visualizer_state=visualizer_state,
             artwork_channels=artwork_channels,
             output_delay_ms=self._applied_delay_ms,
             state_supported_commands=[
