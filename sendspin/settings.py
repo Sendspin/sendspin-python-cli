@@ -136,6 +136,8 @@ class ClientSettings(BaseSettings):
     visualizer: bool = False
     manufacturer: str | None = None
     product_name: str | None = None
+    # Legacy: the daemon tracked the last-playback server here before aiosendspin 10.
+    # It is now kept in the pairing store; the daemon copies this value there once.
     last_played_server_id: str | None = None
     # IP address of the network interface to use for mDNS discovery and (in daemon
     # server-initiated mode) for binding the incoming-connection listener.

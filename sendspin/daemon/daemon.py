@@ -7,23 +7,15 @@ import contextlib
 import logging
 import signal
 from dataclasses import dataclass
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import ClientError, web
 from aiosendspin.client import ClientListener, PairingSupport, SendspinClient
-from aiosendspin.models.core import GroupUpdateServerPayload, ServerCommandPayload
+from aiosendspin.models.core import ServerCommandPayload
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
-from aiosendspin.models.types import (
-    Activity,
-    GoodbyeReason,
-    PairAbortReason,
-    PlaybackStateType,
-    PlayerCommand,
-    Roles,
-)
+from aiosendspin.models.types import PairAbortReason, PlayerCommand, Roles
 
 from sendspin.audio_devices import AudioDevice, detect_supported_audio_formats
 from sendspin.audio_connector import AudioStreamHandler
@@ -82,12 +74,8 @@ class SendspinDaemon:
         # because CLI overrides aren't persisted to settings, so
         # `settings.output_delay_ms` can lag the value actually given to the client.
         self._output_delay_ms: float = 0.0
-        self._connection_lock: asyncio.Lock | None = None
         self._server_url: str | None = None
         self._admission_timeout_logged: bool = False
-        self._group_update_unsubscribe: Callable[[], None] | None = None
-        self._server_command_unsubscribe: Callable[[], None] | None = None
-        self._pairing_abort_unsubscribe: Callable[[], None] | None = None
 
     def _create_client(self) -> SendspinClient:
         """Create a new SendspinClient instance."""
@@ -230,7 +218,15 @@ class SendspinDaemon:
             self._args.listen_port,
         )
 
-        self._connection_lock = asyncio.Lock()
+        # One client receives every incoming connection, so aiosendspin applies the
+        # spec's multi-server admission rules across them (connection.md, Multiple
+        # servers): it ranks playback > pairing > idle, keeps a pairing attempt,
+        # breaks idle ties by the last-playback server, and sends the displaced or
+        # rejected server the matching goodbye or pair/abort.
+        await self._seed_last_playback_server()
+        client = self._create_client()
+        self._attach_client(client)
+        client.add_disconnect_listener(self._on_disconnect)
 
         self._listener = ClientListener(
             client_id=self._args.identity.peer_id,
@@ -250,182 +246,90 @@ class SendspinDaemon:
         assert self._audio_handler is not None
         self._client = client
         self._audio_handler.attach_client(client)
-        self._server_command_unsubscribe = client.add_server_command_listener(
-            self._handle_server_command
-        )
-        self._group_update_unsubscribe = client.add_group_update_listener(self._on_group_update)
-        self._pairing_abort_unsubscribe = client.add_pairing_abort_listener(
-            self._handle_pairing_abort
-        )
+        client.add_server_command_listener(self._handle_server_command)
+        client.add_pairing_abort_listener(self._handle_pairing_abort)
         if MPRIS_AVAILABLE and self._args.use_mpris:
             self._mpris = SendspinMpris(client)
             self._mpris.start()
 
-    def _detach_client(self) -> None:
-        """Detach listeners, audio handler, and MPRIS from the current client."""
-        if self._server_command_unsubscribe is not None:
-            self._server_command_unsubscribe()
-            self._server_command_unsubscribe = None
-        if self._group_update_unsubscribe is not None:
-            self._group_update_unsubscribe()
-            self._group_update_unsubscribe = None
-        if self._pairing_abort_unsubscribe is not None:
-            self._pairing_abort_unsubscribe()
-            self._pairing_abort_unsubscribe = None
-        if self._mpris is not None:
-            self._mpris.stop()
-            self._mpris = None
-        if self._audio_handler is not None:
-            self._audio_handler.detach_client()
+    def _on_disconnect(self) -> None:
+        """Reset audio once the admitted connection closes (server-initiated mode)."""
+        create_task(self._handle_disconnect())
 
     async def _handle_disconnect(self) -> None:
         """Reset audio state after a connection drop."""
         if self._audio_handler is not None:
             await self._audio_handler.handle_disconnect()
 
-    def _should_switch_to_new_server(
-        self, old_client: SendspinClient, new_client: SendspinClient
-    ) -> bool:
-        """Decide whether to switch to a new server per the multi-server spec.
+    async def _seed_last_playback_server(self) -> None:
+        """Carry the last-playback server over from settings into the pairing store.
 
-        Assumes both clients have completed their handshake.
+        Before aiosendspin 10 the daemon tracked it in settings; the client now keeps it
+        in the pairing store, where admission reads it to break ties between idle servers.
         """
-        assert new_client.server_info is not None
-
-        # Old client may have disconnected before we acquired the lock.
-        if old_client.server_info is None:
-            return True
-
-        if new_client.server_info.server_id == old_client.server_info.server_id:
-            return True
-
-        new_is_playback = Activity.PLAYBACK in new_client.activities
-        old_is_playback = Activity.PLAYBACK in old_client.activities
-
-        if new_is_playback:
-            return True
-        if old_is_playback:
-            return False
-
-        # Both 'discovery' — prefer last played server.
-        if self._settings.last_played_server_id == new_client.server_info.server_id:
-            return True
-
-        return False
-
-    def _on_group_update(self, payload: GroupUpdateServerPayload) -> None:
-        """Track last played server for multi-server arbitration."""
-        if payload.playback_state != PlaybackStateType.PLAYING:
-            return
-        if self._client is None or self._client.server_info is None:
-            return
-        server_id = self._client.server_info.server_id
-        if self._settings.last_played_server_id != server_id:
-            self._settings.update(last_played_server_id=server_id)
+        legacy = self._settings.last_played_server_id
+        store = self._args.pairing_store
+        if legacy is not None and await store.get_last_playback_server_id() is None:
+            await store.set_last_playback_server_id(legacy)
 
     async def _handle_server_connection(self, ws: web.WebSocketResponse) -> None:
-        """Handle an incoming server connection.
+        """Hand an incoming server connection to the client and follow its admission.
 
-        ``SendspinClient.attach_websocket()`` now blocks for the connection's
-        entire lifetime once admitted (it only returns when the connection
-        closes), so it's driven as a background task here and ``client.connected``
-        is polled to learn when admission completes — the same pattern
-        aiosendspin's own tests use for server-initiated dials.
+        ``attach_websocket`` brings the connection up and arbitrates it against the
+        current one. It returns early when the connection is rejected or fails bring-up;
+        once admitted, it blocks until the connection closes. aiosendspin reports no
+        event when an admitted connection displaces another, so a new ``server_info``
+        object on the client is what shows this connection got in. The old server's
+        audio is dropped then, before the new server can start a stream.
         """
         logger.info("Server connected")
-        assert self._audio_handler is not None
-        assert self._connection_lock is not None
-        assert self._settings is not None
+        client = self._client
+        assert client is not None
 
-        client = self._create_client()
+        previous = client.server_info
         attach_task = create_task(client.attach_websocket(ws))
-
-        try:
-            async with asyncio.timeout(30):
-                while not client.connected and not attach_task.done():
-                    await asyncio.sleep(0.01)
-        except TimeoutError:
-            logger.warning("Handshake with server timed out")
-            attach_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await attach_task
-            return
-
-        if not client.connected:
-            # attach_task finished without admitting — either rejected/failed bring-up
-            # (raises, logged below) or its own internal handshake timeout elapsed
-            # (aiosendspin catches that internally and returns normally, so there's no
-            # exception to report; without this the whole attempt is silent).
-            exc = attach_task.exception() if attach_task.done() else None
-            if exc is not None:
-                logger.warning("Handshake with server failed: %s", exc)
-            else:
-                # Admission timeouts recur on every reconnect while a server
-                # keeps redialing, so log the first at info (an unadmitted
-                # connection would otherwise be fully silent) and repeats at
-                # debug. The flag resets below once a connection is admitted.
-                if not self._admission_timeout_logged:
-                    logger.info(
-                        "Incoming connection did not complete admission "
-                        "(handshake timed out or was aborted); waiting for a retry."
-                    )
-                    self._admission_timeout_logged = True
-                else:
-                    logger.debug(
-                        "Incoming connection did not complete admission "
-                        "(handshake timed out or was aborted); waiting for a retry."
-                    )
+        while not attach_task.done():
+            current = client.server_info
+            if current is not None and current is not previous:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            self._log_unadmitted_connection(attach_task)
             return
 
         # Reaching here means the connection was admitted: re-arm the
         # first-time info log so a later wedged spell is visible again.
         self._admission_timeout_logged = False
+        assert current is not None
+        activities = [a.value for a in client.activities]
+        if previous is not None:
+            logger.info("Switching to server '%s' (activities=%s)", current.name, activities)
+            await self._handle_disconnect()
+        else:
+            logger.info("Admitted server '%s' (activities=%s)", current.name, activities)
 
-        # Lock ensures we wait for any in-progress handshake to complete
-        # before disconnecting the previous server
-        async with self._connection_lock:
-            old_client = self._client
-
-            # Decide which server to keep.
-            if old_client is not None:
-                if self._should_switch_to_new_server(old_client, client):
-                    assert client.server_info is not None
-                    logger.info(
-                        "Switching to server '%s' (activities=%s)",
-                        client.server_info.name,
-                        [a.value for a in client.activities],
-                    )
-                    self._detach_client()
-                    await self._handle_disconnect()
-                    await old_client.disconnect(GoodbyeReason.ANOTHER_SERVER)
-                else:
-                    assert old_client.server_info is not None
-                    assert client.server_info is not None
-                    logger.info(
-                        "Keeping server '%s', rejecting '%s' (activities=%s)",
-                        old_client.server_info.name,
-                        client.server_info.name,
-                        [a.value for a in client.activities],
-                    )
-                    await client.disconnect(GoodbyeReason.ANOTHER_SERVER)
-                    with contextlib.suppress(Exception):
-                        await attach_task
-                    return
-
-            self._attach_client(client)
-
-        # Handshake complete, release lock so new connections can proceed.
-        # attach_task only resolves once the connection actually closes.
         try:
             await attach_task
-            logger.info("Server disconnected")
+            logger.info("Server '%s' disconnected", current.name)
         except Exception:
             logger.exception("Error while connection was active")
-        finally:
-            # Only cleanup if we're still the active client (not replaced by new connection)
-            if self._client is client:
-                self._detach_client()
-                await self._handle_disconnect()
+
+    def _log_unadmitted_connection(self, attach_task: asyncio.Task[None]) -> None:
+        """Report an incoming connection that was rejected or never completed admission."""
+        exc = attach_task.exception()
+        if exc is not None:
+            logger.warning("Handshake with server failed: %s", exc)
+            return
+        # Rejections and admission timeouts recur on every reconnect while a server
+        # keeps redialing, so log the first at info (an unadmitted connection would
+        # otherwise be fully silent) and repeats at debug. The flag resets once a
+        # connection is admitted.
+        log = logger.debug if self._admission_timeout_logged else logger.info
+        log(
+            "Incoming connection was not admitted (rejected for another server, "
+            "handshake timed out or was aborted); waiting for a retry."
+        )
+        self._admission_timeout_logged = True
 
     async def _connection_loop(self, url: str) -> None:
         """Run the connection loop with automatic reconnection (client-initiated mode)."""
