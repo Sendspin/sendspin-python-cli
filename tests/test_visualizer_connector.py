@@ -62,8 +62,8 @@ def test_loudness_only_frame_reaches_emitted_spectrum_frame() -> None:
     asyncio.run(exercise())
 
 
-def test_stream_clear_drops_stale_pitch() -> None:
-    """stream/clear resets the last-seen pitch so it can't ride into the next stream."""
+def test_stream_clear_drops_stale_f_peak() -> None:
+    """stream/clear resets the last-seen f_peak so it can't ride into the next stream."""
 
     async def exercise() -> None:
         received: list[VisualizerFrame] = []
@@ -73,13 +73,13 @@ def test_stream_clear_drops_stale_pitch() -> None:
         on_data = client.visualizer_listeners[0]
         on_clear = client.stream_clear_listeners[0]
 
-        on_data([VisualizerFrame(timestamp_us=1, pitch_midi_q88=17664)])
+        on_data([VisualizerFrame(timestamp_us=1, f_peak_freq=440)])
         on_clear(None)
         on_data([VisualizerFrame(timestamp_us=2, spectrum=[1, 2, 3])])
         await asyncio.sleep(0.02)  # let the scheduled emission fire
 
         emitted = received[-1]
         assert emitted.spectrum == [1, 2, 3]
-        assert emitted.pitch_midi_q88 is None
+        assert emitted.f_peak_freq is None
 
     asyncio.run(exercise())

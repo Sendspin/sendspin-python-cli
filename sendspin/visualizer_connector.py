@@ -41,7 +41,6 @@ class VisualizerHandler:
         # Attached to the next emitted spectrum frame so they ride the same
         # playhead schedule instead of being dropped.
         self._latest_loudness: int | None = None
-        self._latest_pitch_midi: int | None = None
         self._latest_f_peak_freq: int | None = None
 
     def attach_client(self, client: SendspinClient) -> None:
@@ -60,7 +59,6 @@ class VisualizerHandler:
             self._timer = None
         self._pending.clear()
         self._latest_loudness = None
-        self._latest_pitch_midi = None
         self._latest_f_peak_freq = None
         self._on_frame(VisualizerFrame(timestamp_us=0))
 
@@ -89,8 +87,6 @@ class VisualizerHandler:
         for frame in frames:
             if frame.loudness is not None:
                 self._latest_loudness = frame.loudness
-            if frame.pitch_midi_q88 is not None:
-                self._latest_pitch_midi = frame.pitch_midi_q88
             if frame.f_peak_freq is not None:
                 self._latest_f_peak_freq = frame.f_peak_freq
             if frame.spectrum is None:
@@ -106,7 +102,7 @@ class VisualizerHandler:
         """Handle stream end for visualizer role."""
         if roles is not None and "visualizer" not in roles:
             return
-        # reset() also drops the last-seen tonal values so a stale readout from
+        # reset() also drops the last-seen loudness and f_peak so a stale readout from
         # the previous stream can't survive into the next one.
         self.reset()
 
@@ -145,7 +141,6 @@ class VisualizerHandler:
         if latest_due is not None:
             if latest_due.loudness is None:
                 latest_due.loudness = self._latest_loudness
-            latest_due.pitch_midi_q88 = self._latest_pitch_midi
             latest_due.f_peak_freq = self._latest_f_peak_freq
             self._on_frame(latest_due)
 

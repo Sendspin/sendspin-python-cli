@@ -837,7 +837,7 @@ class SendspinUI:
         """Build the visualizer as raw Text rows, totaling `height`.
 
         Stacks the peak and beat strips above the spectrum and the f_peak
-        arrow, pitch arrow, and footer below it, dropping lowest-priority
+        arrow and footer below it, dropping lowest-priority
         rows first on short terminals. The spectrum fills the rest.
         """
         state = self._state.visualizer_state
@@ -875,23 +875,16 @@ class SendspinUI:
         # Same background the spectrum paints, so the strips/cursor/footer match.
         row_bg = f"on {bg_color}" if bg_color else ""
 
-        # Frequency-domain cursors: arrows onto the spectrum's freq axis plus a
-        # footer naming each value. pitch uses the on-color, f_peak white/black —
-        # both guaranteed against the background, and distinct from each other.
-        f_peak_marker, pitch_marker, footer_parts, f_peak_col = self._build_freq_cursors(
-            bar_width, on_color, text_color
-        )
+        # Frequency-domain cursor: an arrow onto the spectrum's freq axis plus a
+        # footer naming the value, in white/black (guaranteed vs the background).
+        f_peak_marker, footer_parts, f_peak_col = self._build_freq_cursors(bar_width, text_color)
         vtypes = self._state.visualizer_types
         clock = self._state.server_now_us
 
         # Row budget, highest keep-priority first: peaks, beats (above the
-        # spectrum), then the f_peak arrow, pitch arrow, and footer (below it).
-        # Strips and f_peak need their type negotiated. A negotiated pitch keeps
-        # its row reserved so the arrow appearing/vanishing with confidence
-        # doesn't shift the layout; an unnegotiated pitch still shows on data.
-        # On short terminals the lowest-priority rows drop first, spectrum >=1.
-        has_pitch = self._state.visualizer_state.has_pitch
-        show_pitch_row = "pitch" in vtypes or has_pitch
+        # spectrum), then the f_peak arrow and footer (below it). Each row needs
+        # its type negotiated. On short terminals the lowest-priority rows drop
+        # first, spectrum >=1.
         candidates: list[str] = []
         if clock is not None and "peak" in vtypes:
             candidates.append("peak")
@@ -899,15 +892,11 @@ class SendspinUI:
             candidates.append("beat")
         if "f_peak" in vtypes:
             candidates.append("f_peak")
-        if show_pitch_row:
-            candidates.append("pitch")
-        if "f_peak" in vtypes or show_pitch_row:
             candidates.append("footer")
         visible = candidates[: max(0, height - 1)]
         show_peaks = "peak" in visible
         show_beats = "beat" in visible
         show_f_peak = "f_peak" in visible
-        show_pitch = "pitch" in visible
         show_footer = "footer" in visible
         spectrum_height = max(1, height - len(visible))
 
@@ -975,9 +964,6 @@ class SendspinUI:
         if show_f_peak:
             markers = [f_peak_marker] if f_peak_marker is not None else []
             rows.append(self._pad_bg(render_freq_cursor_row(bar_width, markers), bar_width, row_bg))
-        if show_pitch:
-            markers = [pitch_marker] if pitch_marker is not None else []
-            rows.append(self._pad_bg(render_freq_cursor_row(bar_width, markers), bar_width, row_bg))
         if show_footer:
             footer = Text()
             for i, (text, color) in enumerate(footer_parts):
@@ -999,26 +985,23 @@ class SendspinUI:
     def _build_freq_cursors(
         self,
         width: int,
-        pitch_color: str,
         f_peak_color: str,
     ) -> tuple[
-        tuple[int, str, str] | None,
         tuple[int, str, str] | None,
         list[tuple[str, str]],
         int | None,
     ]:
-        """Build frequency-cursor markers and footer labels for tonal readouts.
+        """Build the frequency-cursor marker and footer label for the f_peak readout.
 
-        Returns ``(f_peak_marker, pitch_marker, footer_parts, f_peak_column)``
-        where each marker is ``(column, glyph, hex_color)`` or ``None``,
-        footer_parts are ``(text, hex_color)``, and f_peak_column is the
-        dominant-frequency spectrum column (or None). The footer text leads with
-        each cursor's glyph so the readout is self-keying.
+        Returns ``(f_peak_marker, footer_parts, f_peak_column)`` where the
+        marker is ``(column, glyph, hex_color)`` or ``None``, footer_parts are
+        ``(text, hex_color)``, and f_peak_column is the dominant-frequency
+        spectrum column (or None). The footer text leads with the cursor's glyph
+        so the readout is self-keying.
         """
         state = self._state.visualizer_state
         types = self._state.visualizer_types
         footer: list[tuple[str, str]] = []
-        pitch_marker: tuple[int, str, str] | None = None
         f_peak_marker: tuple[int, str, str] | None = None
 
         f_peak_col: int | None = None
@@ -1027,19 +1010,10 @@ class SendspinUI:
             f_peak_col = freq_to_display_column(f_peak_freq, width)
             if f_peak_col is not None:
                 f_peak_marker = (f_peak_col, "△", f_peak_color)
-            # Pad to 5 digits (max 20000 Hz) so the pitch label after it stays put.
+            # Pad to 5 digits (max 20000 Hz) so the label width stays put.
             footer.append((f"△ f_peak: {f_peak_freq:>5} Hz", f_peak_color))
 
-        note = state.pitch_note
-        pitch_freq = state.pitch_freq
-        if state.has_pitch:
-            assert pitch_freq is not None
-            col = freq_to_display_column(pitch_freq, width)
-            if col is not None:
-                pitch_marker = (col, "▲", pitch_color)
-            footer.append((f"▲ pitch: {note}", pitch_color))
-
-        return f_peak_marker, pitch_marker, footer, f_peak_col
+        return f_peak_marker, footer, f_peak_col
 
     @staticmethod
     def _gutter_label(label: str, gutter: int, strip: Text, row_bg: str) -> Text:
@@ -1366,12 +1340,11 @@ class SendspinUI:
         self,
         spectrum: list[int] | None,
         loudness: int | None,
-        pitch_midi_q88: int | None = None,
         f_peak_freq: int | None = None,
     ) -> None:
         """Update visualizer state with new frame data."""
         if self._state.visualizer_enabled:
-            self._state.visualizer_state.update(spectrum, loudness, pitch_midi_q88, f_peak_freq)
+            self._state.visualizer_state.update(spectrum, loudness, f_peak_freq)
             self.refresh()
 
     def set_visualizer_types(self, types: frozenset[str]) -> None:

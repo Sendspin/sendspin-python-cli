@@ -1004,7 +1004,6 @@ class SendspinApp:
             self._ui.set_visualizer_frame(
                 frame.spectrum,
                 frame.loudness,
-                frame.pitch_midi_q88,
                 frame.f_peak_freq,
             )
 

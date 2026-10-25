@@ -15,20 +15,16 @@ from sendspin.tui.visualizer import (
     VisualizerState,
     freq_to_display_column,
     loudness_to_colors,
-    midi_to_note_name,
     render_beat_strip,
     render_peak_strip,
     render_spectrum,
 )
 
-# MIDI 69 (A4) in q8.8 fixed point, well above the pitch-detection floor.
-_A4_MIDI_Q88 = 69 * 256
 
-
-def _ui_with_tonal_frame(types: frozenset[str]) -> SendspinUI:
-    """A visualizer UI holding both a pitch and an f_peak readout."""
+def _ui_with_f_peak_frame(types: frozenset[str]) -> SendspinUI:
+    """A visualizer UI holding an f_peak readout."""
     ui = SendspinUI(0.0, visualizer_enabled=True)
-    ui.set_visualizer_frame([30000] * 32, 40000, _A4_MIDI_Q88, 1000)
+    ui.set_visualizer_frame([30000] * 32, 40000, 1000)
     ui.set_visualizer_types(types)
     return ui
 
@@ -422,16 +418,7 @@ def test_render_peak_strip_strength_scales_glyph_height() -> None:
     assert ramp.index(strong) > ramp.index(weak)
 
 
-# --- pitch / frequency helper tests ---
-
-
-def test_midi_to_note_name_a4() -> None:
-    assert midi_to_note_name(69 * 256) == "A4"
-
-
-def test_midi_to_note_name_rounds_to_nearest_semitone() -> None:
-    # 69.6 in 8.8 fixed-point rounds up to MIDI 70 -> A#4.
-    assert midi_to_note_name(int(69.6 * 256)) == "A#4"
+# --- frequency helper tests ---
 
 
 def test_freq_to_display_column_clamps_to_endpoints() -> None:
@@ -501,49 +488,23 @@ def test_render_peak_strip_uses_palette_color() -> None:
     assert styles == {"#abcdef"}
 
 
-# --- tonal cursor row tests ---
+# --- f_peak cursor row tests ---
 
 
 def test_f_peak_arrow_hidden_when_not_negotiated() -> None:
     """f_peak is type-gated: its data without the negotiated type renders nothing."""
-    rows = _ui_with_tonal_frame(frozenset({"pitch"}))._build_visualizer_rows(10)
+    rows = _ui_with_f_peak_frame(frozenset({"spectrum"}))._build_visualizer_rows(10)
     plain = "".join(row.plain for row in rows)
     assert "△" not in plain
+    assert "f_peak:" not in plain
 
 
-def test_pitch_arrow_shown_when_not_negotiated() -> None:
-    """Pitch is data-gated, not type-gated: a confident readout always renders."""
-    rows = _ui_with_tonal_frame(frozenset({"f_peak"}))._build_visualizer_rows(10)
-    plain = "".join(row.plain for row in rows)
-    assert "▲" in plain
-
-
-def test_negotiated_pitch_row_keeps_layout_stable() -> None:
-    """A negotiated pitch reserves its row, so a lost readout doesn't shift rows."""
-    types = frozenset({"f_peak", "pitch"})
-
-    with_pitch = SendspinUI(0.0, visualizer_enabled=True)
-    with_pitch.set_visualizer_frame([30000] * 32, 40000, _A4_MIDI_Q88, 1000)
-    with_pitch.set_visualizer_types(types)
-    rows_with_pitch = with_pitch._build_visualizer_rows(10)
-
-    no_pitch = SendspinUI(0.0, visualizer_enabled=True)
-    no_pitch.set_visualizer_frame([30000] * 32, 40000, 0, 1000)  # no pitch readout
-    no_pitch.set_visualizer_types(types)
-    rows_no_pitch = no_pitch._build_visualizer_rows(10)
-
-    f_peak_confident = next(i for i, r in enumerate(rows_with_pitch) if "△" in r.plain)
-    f_peak_silent = next(i for i, r in enumerate(rows_no_pitch) if "△" in r.plain)
-    assert f_peak_confident == f_peak_silent
-
-
-def test_pitch_arrow_on_separate_line_below_f_peak() -> None:
-    """With both negotiated, the f_peak arrow gets its own line above pitch's."""
-    rows = _ui_with_tonal_frame(frozenset({"f_peak", "pitch"}))._build_visualizer_rows(10)
-    f_peak_row = next(i for i, row in enumerate(rows) if "△" in row.plain)
-    pitch_row = next(i for i, row in enumerate(rows) if "▲" in row.plain)
-    assert f_peak_row < pitch_row
-    assert "▲" not in rows[f_peak_row].plain
+def test_f_peak_arrow_and_footer_shown_when_negotiated() -> None:
+    rows = _ui_with_f_peak_frame(frozenset({"f_peak"}))._build_visualizer_rows(10)
+    arrow_row = next(i for i, row in enumerate(rows) if "△" in row.plain)
+    footer_row = next(i for i, row in enumerate(rows) if "f_peak:" in row.plain)
+    assert arrow_row < footer_row
+    assert "1000 Hz" in rows[footer_row].plain
 
 
 # --- VisualizerState activity tests ---
