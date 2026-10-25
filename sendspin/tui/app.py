@@ -296,9 +296,13 @@ class SendspinApp:
         """Build visualizer support payload for client/hello (visualizer@v1)."""
         return ClientHelloVisualizerSupport(buffer_capacity=65536)
 
-    @staticmethod
-    def _build_visualizer_state() -> VisualizerStatePayload:
-        """Build the visualizer stream configuration requested in client/state."""
+    def _build_visualizer_state(self) -> VisualizerStatePayload:
+        """Build the visualizer stream configuration requested in client/state.
+
+        A disabled visualizer requests no types, so it can be toggled without reconnecting.
+        """
+        if not self._visualizer_enabled:
+            return VisualizerStatePayload(types=[], rate_max=30)
         return VisualizerStatePayload(
             types=["loudness", "spectrum", "beat", "peak", "f_peak"],
             rate_max=30,
@@ -311,15 +315,9 @@ class SendspinApp:
         )
 
     def _create_client(self) -> SendspinClient:
-        """Create a new SendspinClient with roles based on current visualizer state."""
+        """Create a new SendspinClient with the roles this TUI supports."""
         args = self._args
-        roles = [Roles.CONTROLLER, Roles.PLAYER, Roles.METADATA, Roles.COLOR]
-        visualizer_support = None
-        visualizer_state = None
-        if self._visualizer_enabled:
-            visualizer_support = self._build_visualizer_support()
-            visualizer_state = self._build_visualizer_state()
-            roles.append(Roles.VISUALIZER)
+        roles = [Roles.CONTROLLER, Roles.PLAYER, Roles.METADATA, Roles.COLOR, Roles.VISUALIZER]
 
         artwork_channels: list[ArtworkChannel] | None = None
         if self._supports_artwork:
@@ -342,8 +340,8 @@ class SendspinApp:
                 supported_formats=self._supported_formats,
                 buffer_capacity=32_000_000,
             ),
-            visualizer_support=visualizer_support,
-            visualizer_state=visualizer_state,
+            visualizer_support=self._build_visualizer_support(),
+            visualizer_state=self._build_visualizer_state(),
             artwork_channels=artwork_channels,
             output_delay_ms=self._applied_delay_ms,
             state_supported_commands=[
@@ -385,26 +383,25 @@ class SendspinApp:
         if self._ui is not None:
             self._ui.set_visualizer_enabled(self._visualizer_enabled)
 
-        if self._visualizer_enabled:
-            self._visualizer_handler = VisualizerHandler(
-                on_frame=self._handle_visualizer_frame,
-            )
-            self._visualizer_handler.attach_client(self._client)
-            self._beat_handler = BeatHandler(
-                on_beat=self._handle_beat,
-                on_schedule=self._handle_beat_schedule,
-            )
-            self._beat_handler.attach_client(self._client)
-            self._peak_handler = PeakHandler(
-                on_peak=self._handle_peak,
-                on_schedule=self._handle_peak_schedule,
-            )
-            self._peak_handler.attach_client(self._client)
-            self._listener_unsubscribes.append(
-                self._client.add_stream_start_listener(self._handle_stream_start)
-            )
-            if self._ui is not None:
-                self._ui.set_server_clock(self._server_now_us)
+        self._visualizer_handler = VisualizerHandler(
+            on_frame=self._handle_visualizer_frame,
+        )
+        self._visualizer_handler.attach_client(self._client)
+        self._beat_handler = BeatHandler(
+            on_beat=self._handle_beat,
+            on_schedule=self._handle_beat_schedule,
+        )
+        self._beat_handler.attach_client(self._client)
+        self._peak_handler = PeakHandler(
+            on_peak=self._handle_peak,
+            on_schedule=self._handle_peak_schedule,
+        )
+        self._peak_handler.attach_client(self._client)
+        self._listener_unsubscribes.append(
+            self._client.add_stream_start_listener(self._handle_stream_start)
+        )
+        if self._ui is not None:
+            self._ui.set_server_clock(self._server_now_us)
 
         if self._supports_artwork:
             self._artwork_handler = ArtworkHandler(
@@ -951,27 +948,19 @@ class SendspinApp:
         self._applied_delay_ms = delay_ms
 
     async def _toggle_visualizer(self) -> None:
-        """Toggle the visualizer on/off, reconnecting with updated roles."""
+        """Toggle the visualizer on/off by changing the types requested in client/state."""
         assert self._ui is not None
+        assert self._client is not None
 
         self._visualizer_enabled = not self._visualizer_enabled
         self._settings.update(visualizer=self._visualizer_enabled)
+        if not self._visualizer_enabled:
+            if self._visualizer_handler:
+                self._visualizer_handler.reset()
+            self._clear_visualizer_timelines()
         self._ui.set_visualizer_enabled(self._visualizer_enabled)
-
-        old_client = self._client
-        self._detach_client()  # detach from old (still self._client)
-
-        self._client = self._create_client()
-        self._attach_client()  # attach to new self._client
-
-        if old_client is not None:
-            # Reuse server-switch mechanism so the connection loop treats the
-            # client swap as a reconnect (prevents CancelledError propagation
-            # when a connect is in-flight).
-            if self._state.selected_server:
-                self._connection_manager.set_pending_server(self._state.selected_server)
-            if not self._cancel_connect():
-                await old_client.disconnect()
+        # The server answers with a stream/start carrying the new types while a stream runs.
+        await self._client.set_visualizer_state(self._build_visualizer_state())
 
     def _server_now_us(self) -> int:
         """Current time in the server clock the beat and peak strips are drawn against.
