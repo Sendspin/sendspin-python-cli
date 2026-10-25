@@ -123,7 +123,7 @@ class ClientSettings(BaseSettings):
 
     player_volume: int = 25
     player_muted: bool = False
-    static_delay_ms: float = 0.0
+    output_delay_ms: float = 0.0
     last_server_url: str | None = None
     audio_device: str | None = None
     use_mpris: bool = True
@@ -148,7 +148,7 @@ class ClientSettings(BaseSettings):
         *,
         player_volume: int | None = None,
         player_muted: bool | None = None,
-        static_delay_ms: float | None = None,
+        output_delay_ms: float | None = None,
         last_server_url: str | None = None,
         name: str | None = None,
         audio_device: str | None = None,
@@ -180,7 +180,7 @@ class ClientSettings(BaseSettings):
             self._update_fields(
                 {
                     "player_muted": player_muted,
-                    "static_delay_ms": static_delay_ms,
+                    "output_delay_ms": output_delay_ms,
                     "last_server_url": last_server_url,
                     "name": name,
                     "audio_device": audio_device,
@@ -210,6 +210,7 @@ class ClientSettings(BaseSettings):
             logger.debug("Settings file does not exist: %s", self._settings_file)
             return False
 
+        needs_save = False
         try:
             data = json.loads(self._settings_file.read_text())
             # Update fields from loaded data
@@ -218,12 +219,17 @@ class ClientSettings(BaseSettings):
             self.listen_port = data.get("listen_port")
             self.player_volume = data.get("player_volume", 25)
             self.player_muted = data.get("player_muted", False)
-            self.static_delay_ms = data.get("static_delay_ms", 0.0)
+            # Settings saved before the spec rename store the delay as static_delay_ms.
+            if "output_delay_ms" in data:
+                self.output_delay_ms = data["output_delay_ms"]
+            elif "static_delay_ms" in data:
+                self.output_delay_ms = data["static_delay_ms"]
+                needs_save = True
             # Clamp to valid range; also handles old negative sign convention.
-            if self.static_delay_ms < 0:
-                self.static_delay_ms = min(5000.0, -self.static_delay_ms)
-            elif self.static_delay_ms > 5000:
-                self.static_delay_ms = 5000.0
+            if self.output_delay_ms < 0:
+                self.output_delay_ms = min(5000.0, -self.output_delay_ms)
+            elif self.output_delay_ms > 5000:
+                self.output_delay_ms = 5000.0
             self.last_server_url = data.get("last_server_url")
             self.audio_device = data.get("audio_device")
             self.use_mpris = data.get("use_mpris", True)
@@ -247,7 +253,7 @@ class ClientSettings(BaseSettings):
             )
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to load settings from %s: %s", self._settings_file, e)
-        return False
+        return needs_save
 
 
 @dataclass

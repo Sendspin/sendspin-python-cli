@@ -179,10 +179,16 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         help="Logging level to use (default: INFO)",
     )
     target.add_argument(
-        "--static-delay-ms",
+        "--output-delay-ms",
         type=float,
         default=default,
         help="Extra playback delay in milliseconds applied after clock sync",
+    )
+    target.add_argument(
+        "--static-delay-ms",
+        type=float,
+        default=default,
+        help=argparse.SUPPRESS,
     )
     target.add_argument(
         "--audio-device",
@@ -413,10 +419,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Logging level to use (default: INFO)",
     )
     daemon_parser.add_argument(
-        "--static-delay-ms",
+        "--output-delay-ms",
         type=float,
         default=None,
         help="Extra playback delay in milliseconds applied after clock sync",
+    )
+    daemon_parser.add_argument(
+        "--static-delay-ms",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     daemon_parser.add_argument(
         "--audio-device",
@@ -736,7 +748,7 @@ async def _run_daemon_mode(
         pairing_store=pairing_store,
         client_name=client_name,
         settings=settings,
-        static_delay_ms=args.static_delay_ms,
+        output_delay_ms=args.output_delay_ms,
         listen_port=args.listen_port,
         use_mpris=args.use_mpris,
         preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
@@ -830,6 +842,13 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         print("Routing to daemon mode...\n")
         args.command = "daemon"
 
+    # Handle deprecated --static-delay-ms, renamed to --output-delay-ms by the spec.
+    static_delay_ms = getattr(args, "static_delay_ms", None)
+    if static_delay_ms is not None:
+        print("Warning: --static-delay-ms is deprecated. Use --output-delay-ms instead.")
+        if getattr(args, "output_delay_ms", None) is None:
+            args.output_delay_ms = static_delay_ms
+
     is_daemon = args.command == "daemon"
     mode: Literal["tui", "daemon"] = "daemon" if is_daemon else "tui"
     settings_dir = getattr(args, "settings_dir", None)
@@ -846,8 +865,8 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         args.name = settings.name
     if args.audio_device is None:
         args.audio_device = settings.audio_device
-    if args.static_delay_ms is None and settings.static_delay_ms != 0.0:
-        args.static_delay_ms = settings.static_delay_ms
+    if args.output_delay_ms is None and settings.output_delay_ms != 0.0:
+        args.output_delay_ms = settings.output_delay_ms
     if args.log_level is None:
         args.log_level = settings.log_level or "INFO"
     if is_daemon and getattr(args, "listen_port", None) is None:
@@ -951,7 +970,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         pairing_store=pairing_store,
         client_name=client_name,
         settings=settings,
-        static_delay_ms=args.static_delay_ms,
+        output_delay_ms=args.output_delay_ms,
         use_mpris=args.use_mpris,
         preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
         volume_controller=volume_controller,

@@ -49,7 +49,7 @@ class DaemonArgs:
     client_name: str
     settings: ClientSettings
     url: str | None = None
-    static_delay_ms: float | None = None
+    output_delay_ms: float | None = None
     listen_port: int = 8928
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
@@ -77,11 +77,11 @@ class SendspinDaemon:
         self._audio_handler: AudioStreamHandler | None = None
         self._settings = args.settings
         self._mpris: SendspinMpris | None = None
-        # Currently-applied static delay in milliseconds, mirroring
-        # `SendspinClient.static_delay_ms`. Tracked separately from settings
+        # Currently-applied output delay in milliseconds, mirroring
+        # `SendspinClient.output_delay_ms`. Tracked separately from settings
         # because CLI overrides aren't persisted to settings, so
-        # `settings.static_delay_ms` can lag the value actually given to the client.
-        self._static_delay_ms: float = 0.0
+        # `settings.output_delay_ms` can lag the value actually given to the client.
+        self._output_delay_ms: float = 0.0
         self._connection_lock: asyncio.Lock | None = None
         self._server_url: str | None = None
         self._admission_timeout_logged: bool = False
@@ -114,25 +114,28 @@ class SendspinDaemon:
             player_support=ClientHelloPlayerSupport(
                 supported_formats=supported_formats,
                 buffer_capacity=32_000_000,
-                supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
             ),
-            static_delay_ms=self._static_delay_ms,
-            state_supported_commands=[PlayerCommand.SET_STATIC_DELAY],
+            output_delay_ms=self._output_delay_ms,
+            state_supported_commands=[
+                PlayerCommand.VOLUME,
+                PlayerCommand.MUTE,
+                PlayerCommand.SET_OUTPUT_DELAY,
+            ],
             initial_volume=self._audio_handler.volume,
             initial_muted=self._audio_handler.muted,
         )
 
     def _build_pairing_support(self) -> PairingSupport:
-        """Build pairing-PIN out-channels for headless (log-based) display."""
+        """Build pairing-code out-channels for headless (log-based) display."""
         return PairingSupport(
-            pin_display=self._show_pairing_code,
-            offer_static_pin=True,
+            pairing_code_display=self._show_pairing_code,
+            offer_static_pairing_code=True,
         )
 
-    async def _show_pairing_code(self, code: str | None) -> None:
-        """Log (or clear) the derived dynamic pairing PIN."""
-        if code is not None:
-            logger.info("Pairing required: enter PIN %s on the server.", code)
+    async def _show_pairing_code(self, pairing_code: str | None, *, grouped: str | None) -> None:
+        """Log (or clear) the derived dynamic pairing code."""
+        if grouped is not None:
+            logger.info("Pairing required: enter pairing code %s on the server.", grouped)
 
     def _handle_pairing_abort(self, reason: PairAbortReason) -> None:
         """Log a non-closing pairing abort (e.g. a mismatched code)."""
@@ -156,13 +159,13 @@ class SendspinDaemon:
             loop.add_signal_handler(signal.SIGINT, signal_handler)
             loop.add_signal_handler(signal.SIGTERM, signal_handler)
 
-        # CLI arg overrides settings for static delay
+        # CLI arg overrides settings for output delay
         delay = (
-            self._args.static_delay_ms
-            if self._args.static_delay_ms is not None
-            else self._settings.static_delay_ms
+            self._args.output_delay_ms
+            if self._args.output_delay_ms is not None
+            else self._settings.output_delay_ms
         )
-        self._static_delay_ms = max(0.0, min(5000.0, delay))
+        self._output_delay_ms = max(0.0, min(5000.0, delay))
 
         self._audio_handler = AudioStreamHandler(
             audio_device=self._args.audio_device,
@@ -489,19 +492,19 @@ class SendspinDaemon:
             self._audio_handler.set_volume(self._audio_handler.volume, muted=player_cmd.mute)
             logger.info("Server %s player", "muted" if player_cmd.mute else "unmuted")
         elif (
-            player_cmd.command == PlayerCommand.SET_STATIC_DELAY
-            and player_cmd.static_delay_ms is not None
+            player_cmd.command == PlayerCommand.SET_OUTPUT_DELAY
+            and player_cmd.output_delay_ms is not None
         ):
             # Client library already applied the delay change;
             # notify audio worker so sync correction adjusts timing gradually
             assert self._client is not None
-            new_delay_ms = self._client.static_delay_ms
-            delta_us = int((new_delay_ms - self._static_delay_ms) * 1000)
+            new_delay_ms = self._client.output_delay_ms
+            delta_us = int((new_delay_ms - self._output_delay_ms) * 1000)
             if delta_us != 0:
                 self._audio_handler.notify_delay_change(delta_us)
-            self._static_delay_ms = new_delay_ms
-            self._settings.update(static_delay_ms=new_delay_ms)
-            logger.info("Server set delay: %dms", player_cmd.static_delay_ms)
+            self._output_delay_ms = new_delay_ms
+            self._settings.update(output_delay_ms=new_delay_ms)
+            logger.info("Server set delay: %dms", player_cmd.output_delay_ms)
 
     def _handle_format_change(
         self, codec: str | None, sample_rate: int, bit_depth: int, channels: int

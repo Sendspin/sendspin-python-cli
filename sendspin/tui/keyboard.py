@@ -110,20 +110,20 @@ class CommandHandler:
             await self.send_media_command(MediaCommand.SHUFFLE)
 
     async def adjust_delay(self, delta: float) -> None:
-        """Adjust static delay by delta milliseconds."""
+        """Adjust output delay by delta milliseconds."""
         client = self._get_client()
         if client is None:
             return
-        old_delay = client.static_delay_ms
+        old_delay = client.output_delay_ms
         new_delay = max(0, min(5000, old_delay + delta))
-        client.set_static_delay_ms(new_delay)
-        actual_delta_us = int((client.static_delay_ms - old_delay) * 1000)
+        client.set_output_delay_ms(new_delay)
+        actual_delta_us = int((client.output_delay_ms - old_delay) * 1000)
         if actual_delta_us != 0:
             self._audio_handler.notify_delay_change(actual_delta_us)
-        self._ui.set_delay(client.static_delay_ms)
-        self._settings.update(static_delay_ms=client.static_delay_ms)
+        self._ui.set_delay(client.output_delay_ms)
+        self._settings.update(output_delay_ms=client.output_delay_ms)
         if self._on_delay_changed is not None:
-            self._on_delay_changed(client.static_delay_ms)
+            self._on_delay_changed(client.output_delay_ms)
         self._audio_handler.send_player_volume()
 
     def close_server_selector(self) -> None:
@@ -155,7 +155,7 @@ async def keyboard_loop(
         on_server_selected: Async callback when a server is selected.
         request_shutdown: Callback to request application shutdown.
         on_toggle_visualizer: Async callback to toggle the visualizer.
-        on_delay_changed: Optional callback invoked with the new static delay
+        on_delay_changed: Optional callback invoked with the new output delay
             (milliseconds) after a local adjust, so the app can keep its
             applied-delay tracker in sync.
     """

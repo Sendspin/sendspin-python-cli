@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from aiohttp import ClientError
 from aiosendspin.client import PairingSupport, SendspinClient
-from aiosendspin.models.artwork import ArtworkChannel, ClientHelloArtworkSupport
+from aiosendspin.models.artwork import ArtworkChannel
 from aiosendspin.models.core import (
     GroupUpdateServerPayload,
     ServerCommandPayload,
@@ -99,44 +99,23 @@ class AppState:
     shuffle: bool | None = None
 
     def update_metadata(self, metadata: SessionUpdateMetadata) -> bool:
-        """Merge new metadata into the state and report if anything changed."""
+        """Replace the metadata state and report if anything changed.
+
+        The metadata object carries the full state, so an omitted field clears it.
+        """
+        progress = metadata.progress
+        new_values = {
+            "title": metadata.title,
+            "artist": metadata.artist,
+            "album": metadata.album,
+            "track_progress": progress.track_progress if progress is not None else None,
+            "track_duration": progress.track_duration if progress is not None else None,
+        }
         changed = False
-
-        # Update simple metadata fields
-        for attr in ("title", "artist", "album"):
-            value = getattr(metadata, attr)
-            if not isinstance(value, UndefinedField) and getattr(self, attr) != value:
+        for attr, value in new_values.items():
+            if getattr(self, attr) != value:
                 setattr(self, attr, value)
                 changed = True
-
-        # Update repeat and shuffle
-        for attr in ("repeat_mode", "shuffle"):
-            # metadata uses "repeat" for the field name, state uses "repeat_mode"
-            meta_attr = "repeat" if attr == "repeat_mode" else attr
-            value = getattr(metadata, meta_attr)
-            if not isinstance(value, UndefinedField) and getattr(self, attr) != value:
-                setattr(self, attr, value)
-                changed = True
-
-        # Update progress fields from nested progress object
-        if isinstance(metadata.progress, UndefinedField):
-            return changed
-
-        if metadata.progress is None:
-            # Clear progress fields
-            if self.track_progress is not None or self.track_duration is not None:
-                self.track_progress = None
-                self.track_duration = None
-                changed = True
-        else:
-            # Update from nested progress object
-            if self.track_progress != metadata.progress.track_progress:
-                self.track_progress = metadata.progress.track_progress
-                changed = True
-            if self.track_duration != metadata.progress.track_duration:
-                self.track_duration = metadata.progress.track_duration
-                changed = True
-
         return changed
 
     def clear_metadata(self) -> bool:
@@ -251,7 +230,7 @@ class AppArgs:
     settings: ClientSettings
     url: str | None = None
     url_from_settings: bool = False
-    static_delay_ms: float | None = None
+    output_delay_ms: float | None = None
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
     volume_controller: VolumeController | None = None
@@ -287,10 +266,10 @@ class SendspinApp:
         self._visualizer_enabled: bool = args.settings.visualizer
         # Probe terminal graphics support before Rich Live takes the tty.
         self._supports_artwork: bool = detect_artwork_support()
-        # Currently-applied static delay in milliseconds, mirroring
-        # `SendspinClient.static_delay_ms`. Tracked separately from settings
+        # Currently-applied output delay in milliseconds, mirroring
+        # `SendspinClient.output_delay_ms`. Tracked separately from settings
         # because CLI overrides aren't persisted to settings, so
-        # `settings.static_delay_ms` can lag the value actually given to the client.
+        # `settings.output_delay_ms` can lag the value actually given to the client.
         self._applied_delay_ms: float = 0.0
         interfaces = [args.interface] if args.interface else None
         self._discovery = ServiceDiscovery(interfaces=interfaces)
@@ -300,25 +279,23 @@ class SendspinApp:
         self._listener_unsubscribes: list[Callable[[], None]] = []
 
     @staticmethod
-    def _build_artwork_support() -> ClientHelloArtworkSupport:
-        """Build artwork support payload for client/hello (artwork@v1)."""
-        return ClientHelloArtworkSupport(
-            channels=[
-                ArtworkChannel(
-                    source=ArtworkSource.ALBUM,
-                    format=PictureFormat.PNG,
-                    media_width=128,
-                    media_height=128,
-                ),
-            ],
-        )
+    def _build_artwork_channels() -> list[ArtworkChannel]:
+        """Build the artwork channels requested via client/state (artwork@v1)."""
+        return [
+            ArtworkChannel(
+                source=ArtworkSource.ALBUM,
+                format=PictureFormat.PNG,
+                width=128,
+                height=128,
+            ),
+        ]
 
     @staticmethod
     def _build_visualizer_support() -> ClientHelloVisualizerSupport:
         """Build visualizer support payload for client/hello (visualizer@v1)."""
         return ClientHelloVisualizerSupport(
             buffer_capacity=65536,
-            types=["loudness", "spectrum", "beat", "peak", "f_peak", "pitch"],
+            types=["loudness", "spectrum", "beat", "peak", "f_peak"],
             rate_max=30,
             spectrum=ClientHelloVisualizerSpectrum(
                 n_disp_bins=SPECTRUM_N_BINS,
@@ -337,9 +314,9 @@ class SendspinApp:
             visualizer_support = self._build_visualizer_support()
             roles.append(Roles.VISUALIZER)
 
-        artwork_support: ClientHelloArtworkSupport | None = None
+        artwork_channels: list[ArtworkChannel] | None = None
         if self._supports_artwork:
-            artwork_support = self._build_artwork_support()
+            artwork_channels = self._build_artwork_channels()
             roles.append(Roles.ARTWORK)
 
         assert self._audio_handler is not None
@@ -357,27 +334,30 @@ class SendspinApp:
             player_support=ClientHelloPlayerSupport(
                 supported_formats=self._supported_formats,
                 buffer_capacity=32_000_000,
-                supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
             ),
             visualizer_support=visualizer_support,
-            artwork_support=artwork_support,
-            static_delay_ms=self._applied_delay_ms,
-            state_supported_commands=[PlayerCommand.SET_STATIC_DELAY],
+            artwork_channels=artwork_channels,
+            output_delay_ms=self._applied_delay_ms,
+            state_supported_commands=[
+                PlayerCommand.VOLUME,
+                PlayerCommand.MUTE,
+                PlayerCommand.SET_OUTPUT_DELAY,
+            ],
             initial_volume=self._audio_handler.volume,
             initial_muted=self._audio_handler.muted,
         )
 
     def _build_pairing_support(self) -> PairingSupport:
-        """Build pairing-PIN out-channels wired into the Rich UI."""
+        """Build pairing-code out-channels wired into the Rich UI."""
         return PairingSupport(
-            pin_display=self._show_pairing_code,
-            offer_static_pin=True,
+            pairing_code_display=self._show_pairing_code,
+            offer_static_pairing_code=True,
         )
 
-    async def _show_pairing_code(self, code: str | None) -> None:
-        """Render (or clear) the derived dynamic pairing PIN in the UI."""
+    async def _show_pairing_code(self, pairing_code: str | None, *, grouped: str | None) -> None:
+        """Render (or clear) the derived dynamic pairing code in the UI."""
         if self._ui is not None:
-            self._ui.show_pairing_code(code)
+            self._ui.show_pairing_code(grouped)
 
     def _attach_client(self) -> None:
         """Attach listeners, audio handler, visualizer, and MPRIS to the current client."""
@@ -484,11 +464,11 @@ class SendspinApp:
             main_task.cancel()
 
         try:
-            # CLI arg overrides settings for static delay
+            # CLI arg overrides settings for output delay
             delay = (
-                args.static_delay_ms
-                if args.static_delay_ms is not None
-                else self._settings.static_delay_ms
+                args.output_delay_ms
+                if args.output_delay_ms is not None
+                else self._settings.output_delay_ms
             )
             self._applied_delay_ms = max(0.0, min(5000.0, delay))
 
@@ -813,18 +793,17 @@ class SendspinApp:
         assert self._client is not None
         await self._client.disconnect()
 
-    def _handle_metadata_update(self, payload: ServerStatePayload) -> None:
+    def _handle_metadata_update(self, payload: ServerStatePayload | None) -> None:
         """Handle server/state messages with metadata."""
         assert self._ui is not None
         state = self._state
         ui = self._ui
-        if isinstance(payload.metadata, UndefinedField):
-            return
-        if payload.metadata is None:
-            # A bare ``metadata: null`` is a spec-legal clear -- an absent field
-            # is UndefinedField and handled above -- so drop the stale
-            # now-playing fields instead of leaving the previous track on screen.
+        if payload is None:
+            # The metadata role was removed, so drop the stale now-playing
+            # fields instead of leaving the previous track on screen.
             changed = state.clear_metadata()
+        elif isinstance(payload.metadata, UndefinedField):
+            return
         else:
             changed = state.update_metadata(payload.metadata)
         if not changed:
@@ -837,7 +816,6 @@ class SendspinApp:
                 album=state.album,
             )
             ui.set_progress(state.track_progress, state.track_duration)
-            ui.set_repeat_shuffle(state.repeat_mode, state.shuffle)
         ui.add_event(state.describe())
 
     def _clear_visualizer_timelines(self) -> None:
@@ -850,9 +828,13 @@ class SendspinApp:
             self._ui.clear_beats()
             self._ui.clear_peaks()
 
-    def _handle_color_update(self, payload: ServerStatePayload) -> None:
+    def _handle_color_update(self, payload: ServerStatePayload | None) -> None:
         """Forward a color@v1 palette payload to the UI."""
         assert self._ui is not None
+        if payload is None:
+            # The color role was removed, so revert to the unthemed palette.
+            self._ui.update_palette(None)
+            return
         if isinstance(payload.color, UndefinedField):
             return
         self._ui.update_palette(payload.color)
@@ -886,12 +868,12 @@ class SendspinApp:
                 if changed and payload.playback_state != PlaybackStateType.PLAYING:
                     self._clear_visualizer_timelines()
 
-    def _handle_server_state(self, payload: ServerStatePayload) -> None:
+    def _handle_server_state(self, payload: ServerStatePayload | None) -> None:
         """Handle server/state messages with controller state."""
         assert self._ui is not None
         state = self._state
         ui = self._ui
-        if payload.controller is None or isinstance(payload.controller, UndefinedField):
+        if payload is None or isinstance(payload.controller, UndefinedField):
             return
 
         controller = payload.controller
@@ -909,6 +891,11 @@ class SendspinApp:
 
         if volume_changed or mute_changed:
             ui.set_volume(state.volume, muted=state.muted)
+
+        if controller.repeat != state.repeat_mode or controller.shuffle != state.shuffle:
+            state.repeat_mode = controller.repeat
+            state.shuffle = controller.shuffle
+            ui.set_repeat_shuffle(state.repeat_mode, state.shuffle)
 
     def _handle_server_command(self, payload: ServerCommandPayload) -> None:
         """Handle server/command messages for player volume/mute control."""
@@ -928,21 +915,21 @@ class SendspinApp:
                 "Server muted player" if player_cmd.mute else "Server unmuted player"
             )
         elif (
-            player_cmd.command == PlayerCommand.SET_STATIC_DELAY
-            and player_cmd.static_delay_ms is not None
+            player_cmd.command == PlayerCommand.SET_OUTPUT_DELAY
+            and player_cmd.output_delay_ms is not None
         ):
             # Client library already applied the delay change;
             # notify audio worker so sync correction adjusts timing gradually
             assert self._client is not None
             assert self._audio_handler is not None
-            new_delay_ms = self._client.static_delay_ms
+            new_delay_ms = self._client.output_delay_ms
             delta_us = int((new_delay_ms - self._applied_delay_ms) * 1000)
             if delta_us != 0:
                 self._audio_handler.notify_delay_change(delta_us)
             self._applied_delay_ms = new_delay_ms
             self._ui.set_delay(new_delay_ms)
-            self._settings.update(static_delay_ms=new_delay_ms)
-            self._ui.add_event(f"Server set delay: {player_cmd.static_delay_ms}ms")
+            self._settings.update(output_delay_ms=new_delay_ms)
+            self._ui.add_event(f"Server set delay: {player_cmd.output_delay_ms}ms")
 
     def _handle_format_change(
         self, codec: str | None, sample_rate: int, bit_depth: int, channels: int
@@ -952,7 +939,7 @@ class SendspinApp:
         self._ui.set_audio_format(codec, sample_rate, bit_depth, channels)
 
     def _set_applied_delay(self, delay_ms: float) -> None:
-        """Mirror the locally-applied static delay so SET_STATIC_DELAY deltas stay correct."""
+        """Mirror the locally-applied output delay so SET_OUTPUT_DELAY deltas stay correct."""
         self._applied_delay_ms = delay_ms
 
     async def _toggle_visualizer(self) -> None:

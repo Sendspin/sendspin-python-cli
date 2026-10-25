@@ -112,7 +112,7 @@ Settings are stored in `~/.config/sendspin/`:
 {
   "player_volume": 50,
   "player_muted": false,
-  "static_delay_ms": 0,
+  "output_delay_ms": 0,
   "last_server_url": "ws://192.168.1.100:8927/sendspin",
   "name": "Living Room",
   "audio_device": "2",
@@ -146,7 +146,7 @@ Settings are stored in `~/.config/sendspin/`:
 |---------|------|------|-------------|
 | `player_volume` | integer (0-100) | TUI/daemon | Player output volume percentage |
 | `player_muted` | boolean | TUI/daemon | Whether the player is muted |
-| `static_delay_ms` | float | TUI/daemon | Extra playback delay in milliseconds |
+| `output_delay_ms` | float | TUI/daemon | Extra playback delay in milliseconds (`--output-delay-ms`). Older settings files that use `static_delay_ms` are migrated automatically |
 | `last_server_url` | string | TUI/daemon | Server URL (used as default for `--url`) |
 | `name` | string | All | Friendly name for client or server (`--name`) |
 | `audio_device` | string | TUI/daemon | Audio device index, name prefix, or ALSA device name (`--audio-device`) |
@@ -177,6 +177,10 @@ By default, the player automatically discovers Sendspin servers on your local ne
 sendspin --url ws://192.168.1.100:8080/sendspin
 ```
 
+The player follows the Sendspin 1.0 spec, so it needs a server built on it, such as
+Music Assistant 2.10.7 or newer (or another server on aiosendspin 10). Older servers refuse
+the connection.
+
 **List available servers on the network:**
 ```bash
 sendspin servers list
@@ -186,22 +190,22 @@ sendspin servers list
 
 Sendspin connections are end-to-end encrypted. The first time a client connects to a
 server that requires pairing, the server picks a pairing method and the client displays
-a short PIN — enter it on the server to approve the client. Once paired, the client's
+a short pairing code — enter it on the server to approve the client. Once paired, the client's
 credentials are persisted (see `--settings-dir` below), so subsequent connections to the
 same server don't require pairing again.
 
-- **TUI**: the PIN appears in a "Pairing Required" panel that takes over the screen until
+- **TUI**: the pairing code appears in a "Pairing Required" panel that takes over the screen until
   pairing completes.
-- **Daemon**: the PIN is only logged (`Pairing required: enter PIN ...`) — there's no other
+- **Daemon**: the pairing code is only logged (`Pairing required: enter pairing code ...`) — there's no other
   surface for it. You need to be watching the daemon's output at the moment it first
   connects to a new server. Under systemd, that means `journalctl -u sendspin -f`. For a
   headless install with unpaired access turned off, plan to watch the log during first setup
   for each new server.
 
-If a pairing attempt fails (e.g. a mismatched PIN), the client logs the reason and you
+If a pairing attempt fails (e.g. a mismatched pairing code), the client logs the reason and you
 can retry by reconnecting.
 
-Unpaired access is on by default, so servers can play on this client without a PIN once
+Unpaired access is on by default, so servers can play on this client without a pairing code once
 the server approves it (Music Assistant does this automatically). Unpaired connections are
 still encrypted, but another device on the network could impersonate either side. To
 require pairing, use `--unpaired-access false` (or `"unpaired_access": false` in the
@@ -311,8 +315,10 @@ Because Sendspin cannot read back external device state from the hook, startup v
 The player supports adjusting playback delay to compensate for audio hardware latency or achieve better synchronization across devices.
 
 ```bash
-sendspin --static-delay-ms 50
+sendspin --output-delay-ms 50
 ```
+
+`--static-delay-ms` still works as a deprecated alias for `--output-delay-ms`.
 
 > **Note:** A delay of 0ms works well in most cases. If audio is playing slightly too late, a small positive delay (e.g., 50ms) can help compensate for audio hardware latency. On compatible servers, delay can be configured remotely per player, so you shouldn't need to set this locally.
 
@@ -369,7 +375,6 @@ The TUI includes a real-time audio visualizer driven by the `visualizer@v1` role
 - **Spectrum bars** — frequency magnitude across the range, tinted by overall loudness (and by the album-artwork palette when the server provides one).
 - **Beats timeline** — a `beats (NNN BPM):` strip with the estimated tempo; downbeats render differently from regular beats.
 - **Peaks timeline** — a `peaks:` strip of energy onsets (transients like drum hits), independent of the beat grid, with glyph height scaled by onset strength.
-- **Pitch** — the perceived musical note (e.g. `A4`) with an arrow pointing at its position on the spectrum, shown whenever a pitch is detected.
 - **Dominant frequency** — an `f_peak:` readout with an arrow marking the loudest frequency on the spectrum.
 
 Lower rows are dropped first on short terminals, keeping the spectrum visible.

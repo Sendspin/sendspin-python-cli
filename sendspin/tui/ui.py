@@ -154,7 +154,7 @@ class UIState:
     highlighted_shortcut: str | None = None
     highlight_time: float = 0.0
 
-    # Pairing: the derived dynamic PIN, shown while a pairing exchange is in
+    # Pairing: the derived dynamic pairing code, shown while a pairing exchange is in
     # progress. None when not pairing.
     pairing_code: str | None = None
 
@@ -688,7 +688,7 @@ class SendspinUI:
         return self._make_panel(content, title="Select Server", default_border="cyan")
 
     def _build_pairing_panel(self) -> Panel:
-        """Build the pairing panel: the derived dynamic PIN."""
+        """Build the pairing panel: the derived dynamic pairing code."""
         content = Table.grid()
         content.add_column(justify="center")
 
@@ -1452,7 +1452,7 @@ class SendspinUI:
         return self._state.show_server_selector
 
     def show_pairing_code(self, code: str | None) -> None:
-        """Show (or clear, on ``None``) the derived dynamic pairing PIN."""
+        """Show (or clear, on ``None``) the derived dynamic pairing code."""
         self._state.pairing_code = code
         self.refresh()
 

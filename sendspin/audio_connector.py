@@ -512,7 +512,11 @@ class AudioStreamHandler:
             worker.clear()
 
     def _on_audio_chunk(
-        self, server_timestamp_us: int, audio_data: bytes | bytearray, fmt: AudioFormat
+        self,
+        server_timestamp_us: int,
+        audio_data: bytes | bytearray,
+        fmt: AudioFormat,
+        send_ahead_us: int,
     ) -> None:
         """Handle incoming audio chunks by enqueueing them to the sync worker."""
         worker = self._audio_worker

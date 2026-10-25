@@ -90,11 +90,11 @@ def test_tui_mute_command_uses_audio_handler_volume_state(tmp_path: Path) -> Non
     assert app._audio_handler.calls == [(53, True)]
 
 
-def test_tui_set_static_delay_uses_applied_tracker_for_delta(tmp_path: Path) -> None:
+def test_tui_set_output_delay_uses_applied_tracker_for_delta(tmp_path: Path) -> None:
     """Sync delta is computed from `_applied_delay_ms`, not stale settings.
 
     Reproduces the CLI-override case: settings stays at 0 while the client was
-    initialized to 500 from `--static-delay-ms`. A server-initiated delay change
+    initialized to 500 from `--output-delay-ms`. A server-initiated delay change
     to 200 must produce delta = -300ms (200 - 500), not -200ms (200 - 0).
     """
     app = _make_app(tmp_path)
@@ -103,14 +103,14 @@ def test_tui_set_static_delay_uses_applied_tracker_for_delta(tmp_path: Path) -> 
     app._applied_delay_ms = 500.0
     # aiosendspin auto-applies before the callback fires, so the client already
     # reports the new value.
-    app._client = SimpleNamespace(static_delay_ms=200.0)
+    app._client = SimpleNamespace(output_delay_ms=200.0)
 
     payload = SimpleNamespace(
         player=SimpleNamespace(
-            command=PlayerCommand.SET_STATIC_DELAY,
+            command=PlayerCommand.SET_OUTPUT_DELAY,
             volume=None,
             mute=None,
-            static_delay_ms=200,
+            output_delay_ms=200,
         )
     )
 
@@ -123,7 +123,7 @@ def test_tui_set_static_delay_uses_applied_tracker_for_delta(tmp_path: Path) -> 
     assert app._audio_handler.delay_changes == [-300_000]
     assert app._applied_delay_ms == 200.0
     assert app._ui.delays == [200.0]
-    assert app._settings.static_delay_ms == 200.0
+    assert app._settings.output_delay_ms == 200.0
 
 
 def test_keyboard_volume_change_uses_audio_handler_state(tmp_path: Path) -> None:
@@ -169,12 +169,12 @@ def test_keyboard_adjust_delay_notifies_app_tracker(tmp_path: Path) -> None:
     audio_handler = _FakeAudioHandler(volume=50, muted=False)
     ui = _FakeUI()
     captured: list[float] = []
-    client = SimpleNamespace(static_delay_ms=0.0)
+    client = SimpleNamespace(output_delay_ms=0.0)
 
-    def set_static_delay_ms(value: float) -> None:
-        client.static_delay_ms = max(0.0, min(5000.0, value))
+    def set_output_delay_ms(value: float) -> None:
+        client.output_delay_ms = max(0.0, min(5000.0, value))
 
-    client.set_static_delay_ms = set_static_delay_ms
+    client.set_output_delay_ms = set_output_delay_ms
 
     handler = CommandHandler(
         get_client=lambda: client,
@@ -187,6 +187,6 @@ def test_keyboard_adjust_delay_notifies_app_tracker(tmp_path: Path) -> None:
 
     asyncio.run(handler.adjust_delay(50))
 
-    assert client.static_delay_ms == 50.0
+    assert client.output_delay_ms == 50.0
     assert audio_handler.delay_changes == [50_000]
     assert captured == [50.0]

@@ -46,10 +46,10 @@ Project documentation, installation instructions, usage guide (including command
 
 ### `sendspin/cli.py`
 Main entry point and orchestrator. Responsibilities:
-- **Argument parsing**: Commands (`serve`, `daemon`), flags (`--url`, `--name`, `--id`, `--audio-device`, `--static-delay-ms`)
+- **Argument parsing**: Commands (`serve`, `daemon`), flags (`--url`, `--name`, `--id`, `--audio-device`, `--output-delay-ms`)
 - **Command routing**: Routes to appropriate mode (TUI app, daemon, or server)
 - **Device enumeration**: Lists audio devices and servers via `audio-devices list` and `servers list` subcommands
-- **Backward compatibility**: Handles deprecated `--headless` flag with warning
+- **Backward compatibility**: Handles deprecated `--headless` and `--static-delay-ms` flags with warnings
 
 ### `sendspin/tui/` (TUI Mode Package)
 Interactive terminal UI mode with keyboard control.
@@ -69,7 +69,7 @@ Keyboard input handling for interactive control. Responsibilities:
 - **Command parsing**: `CommandHandler` class parses and executes commands
 - **Media commands**: play, pause, stop, next, previous, shuffle, repeat modes, switch group
 - **Volume control**: Group volume (`vol+`/`vol-`/`mute`) and player volume (`pvol+`/`pvol-`/`pmute`)
-- **Delay adjustment**: Real-time static delay adjustment via `delay` command
+- **Delay adjustment**: Real-time output delay adjustment via `delay` command
 - **Keyboard shortcuts**: Arrow keys (prev/next/volume), space (toggle), m (mute), g (switch group), q (quit)
 
 #### `sendspin/tui/ui.py`

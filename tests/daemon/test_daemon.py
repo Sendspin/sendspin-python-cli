@@ -70,26 +70,26 @@ def test_mute_command_uses_audio_handler_volume_state_for_external_volume(tmp_pa
     assert daemon._audio_handler.calls == [(53, True)]
 
 
-def test_set_static_delay_uses_applied_tracker_for_delta(tmp_path: Path) -> None:
-    """Sync delta is computed from `_static_delay_ms`, not stale settings.
+def test_set_output_delay_uses_applied_tracker_for_delta(tmp_path: Path) -> None:
+    """Sync delta is computed from `_output_delay_ms`, not stale settings.
 
     Reproduces the CLI-override case: settings stays at 0 while the client was
-    initialized to 500 from `--static-delay-ms`. A server-initiated delay change
+    initialized to 500 from `--output-delay-ms`. A server-initiated delay change
     to 200 must produce delta = -300ms (200 - 500), not -200ms (200 - 0).
     """
     daemon = _make_daemon(tmp_path, settings_volume=25, settings_muted=False)
     daemon._audio_handler = _FakeAudioHandler(volume=25, muted=False)
-    daemon._static_delay_ms = 500.0
+    daemon._output_delay_ms = 500.0
     # aiosendspin auto-applies before the callback fires, so the client already
     # reports the new value.
-    daemon._client = SimpleNamespace(static_delay_ms=200.0)  # type: ignore[assignment]
+    daemon._client = SimpleNamespace(output_delay_ms=200.0)  # type: ignore[assignment]
 
     payload = SimpleNamespace(
         player=SimpleNamespace(
-            command=PlayerCommand.SET_STATIC_DELAY,
+            command=PlayerCommand.SET_OUTPUT_DELAY,
             volume=None,
             mute=None,
-            static_delay_ms=200,
+            output_delay_ms=200,
         )
     )
 
@@ -100,5 +100,5 @@ def test_set_static_delay_uses_applied_tracker_for_delta(tmp_path: Path) -> None
     asyncio.run(run())
 
     assert daemon._audio_handler.delay_changes == [-300_000]
-    assert daemon._static_delay_ms == 200.0
-    assert daemon._settings.static_delay_ms == 200.0
+    assert daemon._output_delay_ms == 200.0
+    assert daemon._settings.output_delay_ms == 200.0
