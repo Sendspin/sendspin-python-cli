@@ -253,6 +253,14 @@ class AudioPlayer:
             device: Audio device to use.
         """
         pcm_format = audio_format.pcm_format
+        if self._stream is not None and self._format == pcm_format:
+            logger.debug(
+                "Audio format unchanged (%dHz/%d-bit/%dch); keeping stream open",
+                pcm_format.sample_rate,
+                pcm_format.bit_depth,
+                pcm_format.channels,
+            )
+            return
         self._format = pcm_format
         self._close_stream()
 
@@ -340,17 +348,16 @@ class AudioPlayer:
         self._stream_executor.shutdown(wait=True)
 
     def close_stream(self) -> None:
-        """Drop queued audio and fully close the stream to release the device.
+        """Drop queued audio but keep the stream open on silence.
 
-        Unlike clear(), which only stops the stream (leaving the device FD open),
-        this fully closes the PortAudio stream. Call when the server signals
-        end-of-stream; the stream will be recreated by set_format() when the
-        next track begins.
+        The callback renders silence while starved, so the audio device
+        stays open and DACs hold lock across pause/resume and across
+        stream end/start pairs. The device is released by stop()
+        (shutdown) and by set_format() when the format actually changes.
         """
         if self._closed:
             return
         self.clear()
-        self._close_stream()
 
     def clear(self) -> None:
         """Drop all queued audio chunks."""
@@ -359,13 +366,11 @@ class AudioPlayer:
         # Clear deferred operation flag
         self._clear_requested = False
 
-        # Stop the audio stream (but don't close it) to release ALSA device
-        # This allows the device to transition to 'closed' state when paused.
-        # The stream restarts when new chunks arrive in submit().
-        self._stream_started = False
-        stream = self._stream
-        if stream is not None:
-            self._stream_executor.submit(self._call_stream, stream.stop)
+        # Keep the audio stream running: with the queue drained the callback
+        # renders silence, so the device stays open and DACs that click a
+        # muting relay on lock loss (e.g. XMOS USB) stay silent across
+        # pause/resume/seek. Chunks submitted after the clear play on the
+        # still-running stream; submit() restarts it only if never started.
 
         # Drain all queued chunks
         while True:
