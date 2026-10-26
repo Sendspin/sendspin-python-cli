@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import qrcode
-from aiosendspin.noise import Identity, InMemoryServerPairingStore
+from aiosendspin.noise import Identity
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientRemovedEvent,
@@ -27,7 +27,7 @@ from aiosendspin.server.push_stream import PushStream
 
 from sendspin.utils import create_task
 
-from .server import SendspinPlayerServer
+from .server import PartyPairingStore, SendspinPlayerServer
 from .source import AudioSource, decode_audio
 
 if TYPE_CHECKING:
@@ -124,7 +124,7 @@ async def run_server(config: ServeConfig) -> int:
         loop=event_loop,
         identity=Identity.generate(),
         server_name=config.name,
-        pairing_store=InMemoryServerPairingStore(),
+        pairing_store=PartyPairingStore(),
     )
 
     client_connected = asyncio.Event()

@@ -12,7 +12,7 @@ import multiprocessing as mp
 from multiprocessing.sharedctypes import Synchronized
 from contextlib import suppress
 
-from aiosendspin.noise import Identity, InMemoryServerPairingStore
+from aiosendspin.noise import Identity
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientRemovedEvent,
@@ -31,7 +31,7 @@ from sendspin.serve.ipc import (
     WorkerError,
     WorkerListening,
 )
-from sendspin.serve.server import SendspinPlayerServer
+from sendspin.serve.server import PartyPairingStore, SendspinPlayerServer
 from sendspin.utils import create_task
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ class ServeWorker:
             loop=loop,
             identity=Identity.generate(),
             server_name=f"Sendspin Worker {self.worker_id}",
-            pairing_store=InMemoryServerPairingStore(),
+            pairing_store=PartyPairingStore(),
             total_listeners=self._total_listeners,
         )
         self._server.add_event_listener(self._on_server_event)
