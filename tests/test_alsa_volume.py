@@ -199,6 +199,38 @@ async def test_find_mixer_element_capability_scan_skips_capture_only(monkeypatch
     assert await find_mixer_element(3) is None
 
 
+async def test_find_mixer_element_capability_scan_skips_capture_boost(monkeypatch) -> None:
+    """Capability scan skips the RT5616 'ADC Boost' capture gain tagged with bare `volume`."""
+    scontrols_output = "Simple mixer control 'ADC Boost',0\nSimple mixer control 'DAC1',0\n"
+    sget_adc_boost = (
+        "Simple mixer control 'ADC Boost',0\n"
+        "  Capabilities: volume\n"
+        "  Playback channels: Front Left - Front Right\n"
+        "  Capture channels: Front Left - Front Right\n"
+        "  Limits: 0 - 3\n"
+        "  Front Left: 0 [0%] [0.00dB]\n"
+        "  Front Right: 0 [0%] [0.00dB]\n"
+    )
+    sget_dac1 = (
+        "Simple mixer control 'DAC1',0\n"
+        "  Capabilities: pvolume\n"
+        "  Playback channels: Front Left - Front Right\n"
+        "  Limits: Playback 0 - 175\n"
+        "  Front Left: Playback 175 [100%] [0.00dB]\n"
+        "  Front Right: Playback 175 [100%] [0.00dB]\n"
+    )
+
+    async def fake_exec(*argv: object, **kwargs: object) -> _FakeProcess:
+        if "scontrols" in argv:
+            return _FakeProcess(stdout=scontrols_output.encode())
+        if "ADC Boost" in argv:
+            return _FakeProcess(stdout=sget_adc_boost.encode())
+        return _FakeProcess(stdout=sget_dac1.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert await find_mixer_element(2) == "DAC1"
+
+
 # -- AlsaVolumeController.set_state ------------------------------------------
 
 
