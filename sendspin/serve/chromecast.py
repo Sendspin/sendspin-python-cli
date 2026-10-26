@@ -83,11 +83,14 @@ async def connect_to_chromecast(
     loop = asyncio.get_running_loop()
 
     # Connect to Chromecast (blocking call, run in executor)
+    browsers: list[Any] = []
+
     def _connect() -> pychromecast.Chromecast:
         chromecasts, browser = pychromecast.get_chromecasts(
             known_hosts=[host],
             zeroconf_instance=zeroconf,
         )
+        browsers.append(browser)
 
         try:
             # Find the Chromecast matching our target host
@@ -107,6 +110,9 @@ async def connect_to_chromecast(
             timeout=15.0,
         )
     except TimeoutError as e:
+        # The timeout cannot cancel the executor thread, so stop its discovery here.
+        for browser in browsers:
+            browser.stop_discovery()
         raise TimeoutError(f"Timeout connecting to Chromecast at {host}") from e
 
     friendly_name = cast.cast_info.friendly_name or f"Chromecast ({host})"
