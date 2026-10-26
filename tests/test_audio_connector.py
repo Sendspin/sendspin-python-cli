@@ -166,7 +166,7 @@ def test_audio_worker_restarts_on_stream_start_after_disconnect(monkeypatch) -> 
         assert restarted_worker.volume == 37
         assert restarted_worker.muted is True
 
-        handler._on_audio_chunk(123_456, b"payload", fmt)
+        handler._on_audio_chunk(123_456, b"payload", fmt, 0)
 
         assert restarted_worker.submitted == [(123_456, b"payload", fmt)]
 

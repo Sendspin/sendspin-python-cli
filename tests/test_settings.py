@@ -37,3 +37,17 @@ async def test_unpaired_access_from_settings_file(
     settings = await get_client_settings("daemon", str(tmp_path))
 
     assert settings.unpaired_access is expected
+
+
+async def test_legacy_static_delay_migrates_to_output_delay(tmp_path: Path) -> None:
+    """Settings saved before the spec rename keep their delay and are rewritten."""
+    path = tmp_path / "settings-daemon.json"
+    path.write_text(json.dumps({"static_delay_ms": 120.0}))
+
+    settings = await get_client_settings("daemon", str(tmp_path))
+    assert settings.output_delay_ms == 120.0
+
+    await settings.flush()
+    saved = json.loads(path.read_text())
+    assert saved["output_delay_ms"] == 120.0
+    assert "static_delay_ms" not in saved

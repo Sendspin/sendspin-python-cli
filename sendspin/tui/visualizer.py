@@ -19,8 +19,6 @@ SPECTRUM_SCALE: SpectrumScale = "mel"
 SPECTRUM_F_MIN = 20
 SPECTRUM_F_MAX = 20000
 
-_NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-
 
 @dataclass(frozen=True, slots=True)
 class PeakEvent:
@@ -108,13 +106,6 @@ def loudness_to_colors(
     return tip, base
 
 
-def midi_to_note_name(midi_q88: int) -> str:
-    """Convert an 8.8 fixed-point MIDI value to a note name (e.g. 69.0 -> 'A4')."""
-    midi = int(round(midi_q88 / 256.0))
-    octave = midi // 12 - 1
-    return f"{_NOTE_NAMES[midi % 12]}{octave}"
-
-
 def _mel(freq_hz: float) -> float:
     """HTK mel scale, matching the server's spectrum binning."""
     return 2595.0 * math.log10(1.0 + freq_hz / 700.0)
@@ -147,21 +138,19 @@ class VisualizerState:
         self._peaks: list[float] = []
         self._peak_hold_timers: list[float] = []
         self._last_step_monotonic = time.monotonic()
-        # Latest tonal readouts (held, not smoothed): pitch and dominant freq.
-        self._pitch_midi_q88: int | None = None
+        # Latest dominant-frequency readout (held, not smoothed).
         self._f_peak_freq: int | None = None
 
     def update(
         self,
         spectrum: list[int] | None,
         loudness: int | None,
-        pitch_midi_q88: int | None = None,
         f_peak_freq: int | None = None,
     ) -> None:
         """Update with new frame data. Periodic values are uint16 (0-65535).
 
-        Tonal readouts (pitch, f_peak) ride along on the spectrum frame as the
-        latest received values; they are held as-is for cursor placement.
+        The f_peak readout rides along on the spectrum frame as the latest
+        received value; it is held as-is for cursor placement.
         """
         if spectrum is None and loudness is None:
             self.clear()
@@ -171,7 +160,6 @@ class VisualizerState:
             self._spectrum_target = [v / 65535.0 for v in spectrum]
         if loudness is not None:
             self._loudness_target = loudness / 65535.0
-        self._pitch_midi_q88 = pitch_midi_q88
         self._f_peak_freq = f_peak_freq
 
     def clear(self) -> None:
@@ -183,7 +171,6 @@ class VisualizerState:
         self._peaks = []
         self._peak_hold_timers = []
         self._last_step_monotonic = time.monotonic()
-        self._pitch_midi_q88 = None
         self._f_peak_freq = None
 
     def _step(self) -> None:
@@ -269,31 +256,11 @@ class VisualizerState:
         return list(self._peaks)
 
     @property
-    def pitch_note(self) -> str | None:
-        """Latest perceived pitch as a note name, or None when not detected."""
-        if self._pitch_midi_q88 is None or self._pitch_midi_q88 <= 0:
-            return None
-        return midi_to_note_name(self._pitch_midi_q88)
-
-    @property
-    def pitch_freq(self) -> float | None:
-        """Latest perceived pitch as a frequency in Hz, or None when not detected."""
-        if self._pitch_midi_q88 is None or self._pitch_midi_q88 <= 0:
-            return None
-        midi = self._pitch_midi_q88 / 256.0
-        return float(440.0 * (2.0 ** ((midi - 69.0) / 12.0)))
-
-    @property
     def f_peak_freq(self) -> int | None:
         """Latest dominant frequency in Hz, or None when not detected."""
         if not self._f_peak_freq:
             return None
         return self._f_peak_freq
-
-    @property
-    def has_pitch(self) -> bool:
-        """Whether a pitch readout is available to display."""
-        return self.pitch_note is not None and self.pitch_freq is not None
 
 
 class BeatState:
