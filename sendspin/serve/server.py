@@ -8,7 +8,19 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import web
+from aiosendspin.noise import InMemoryServerPairingStore, TrustedUnpairedClient
 from aiosendspin.server import SendspinServer
+
+
+class PartyPairingStore(InMemoryServerPairingStore):
+    """Pairing store that approves every client for unpaired playback.
+
+    A party admits anyone who opens the page, so no operator approves clients.
+    """
+
+    async def trusted_unpaired(self, client_id: str) -> TrustedUnpairedClient | None:
+        """Return the stored approval, or a new approval for any other client."""
+        return await super().trusted_unpaired(client_id) or TrustedUnpairedClient(client_id)
 
 
 class SendspinPlayerServer(SendspinServer):
