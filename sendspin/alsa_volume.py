@@ -116,8 +116,10 @@ async def _has_playback_volume(card: int | str, element: str) -> bool:
         return False
     if proc.returncode != 0:
         return False
-    caps = set(stdout.decode().split())
-    return "pvolume" in caps or "volume" in caps
+    output = stdout.decode()
+    caps = set(output.split())
+    # Codecs also tag capture-side gain stages with a bare `volume` capability.
+    return "pvolume" in caps or ("volume" in caps and "Capture channels:" not in output)
 
 
 async def find_mixer_element(card: int | str) -> str | None:
