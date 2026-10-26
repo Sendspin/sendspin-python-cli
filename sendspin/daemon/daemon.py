@@ -218,11 +218,6 @@ class SendspinDaemon:
             self._args.listen_port,
         )
 
-        # One client receives every incoming connection, so aiosendspin applies the
-        # spec's multi-server admission rules across them (connection.md, Multiple
-        # servers): it ranks playback > pairing > idle, keeps a pairing attempt,
-        # breaks idle ties by the last-playback server, and sends the displaced or
-        # rejected server the matching goodbye or pair/abort.
         await self._seed_last_playback_server()
         client = self._create_client()
         self._attach_client(client)
