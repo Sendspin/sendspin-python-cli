@@ -50,7 +50,12 @@ class HookVolumeController:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(f"Volume hook timed out: {' '.join(self._argv)}") from None
         if proc.returncode != 0:
             raise RuntimeError(
                 "Volume hook failed "
