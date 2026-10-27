@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-
-from unittest.mock import MagicMock
+from collections.abc import AsyncGenerator
+from unittest.mock import MagicMock, patch
 
 import pytest
+from aiosendspin.server import AudioFormat
 
 from sendspin.serve.coordinator import ServeCoordinator
-from sendspin.serve.ipc import WorkerClientCount, WorkerError, WorkerListening
+from sendspin.serve.ipc import AudioChunk, WorkerClientCount, WorkerError, WorkerListening
 
 
 @pytest.fixture
@@ -104,3 +105,22 @@ def test_check_worker_health_shuts_down_on_unexpected_worker_crash(
 
     assert coordinator._shutdown_requested is True
     assert coordinator._reported_crashed == {0}
+
+
+@pytest.mark.asyncio
+async def test_chunk_timestamps_follow_sample_count(coordinator: ServeCoordinator) -> None:
+    """Chunk timestamps must not fall behind the audio they follow."""
+    sent: list[AudioChunk] = []
+    coordinator._audio_queues = [MagicMock(put=sent.append)]
+    coordinator._total_listeners.value = 1
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        for _ in range(4):
+            yield bytes(4096 * 4)
+        coordinator._shutdown_requested = True
+
+    source = MagicMock(generator=chunks(), format=AudioFormat(48000, 16, 2))
+    with patch("sendspin.serve.coordinator.decode_audio", return_value=source):
+        await coordinator._stream_audio_loop()
+
+    assert sent[3].play_start_us - sent[0].play_start_us == 256_000
