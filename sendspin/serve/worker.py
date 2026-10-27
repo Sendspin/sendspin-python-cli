@@ -31,7 +31,7 @@ from sendspin.serve.ipc import (
     WorkerError,
     WorkerListening,
 )
-from sendspin.serve.server import PartyPairingStore, SendspinPlayerServer
+from sendspin.serve.server import SendspinPlayerServer
 from sendspin.utils import create_task
 
 logger = logging.getLogger(__name__)
@@ -48,12 +48,14 @@ class ServeWorker:
         audio_queue: mp.Queue,  # type: ignore[type-arg]
         status_queue: mp.Queue,  # type: ignore[type-arg]
         total_listeners: Synchronized[int],
+        allow_unencrypted: bool = False,
     ) -> None:
         self.worker_id = worker_id
         self.port = port
         self._audio_queue = audio_queue
         self._status_queue = status_queue
         self._total_listeners = total_listeners
+        self._allow_unencrypted = allow_unencrypted
         self._server: SendspinPlayerServer | None = None
         self._active_group: SendspinGroup | None = None
         self._stream: PushStream | None = None
@@ -105,8 +107,8 @@ class ServeWorker:
             loop=loop,
             identity=Identity.generate(),
             server_name=f"Sendspin Worker {self.worker_id}",
-            pairing_store=PartyPairingStore(),
             total_listeners=self._total_listeners,
+            allow_unencrypted=self._allow_unencrypted,
         )
         self._server.add_event_listener(self._on_server_event)
         await self._server.start_server(
@@ -177,6 +179,7 @@ def worker_main(
     status_queue: mp.Queue,  # type: ignore[type-arg]
     total_listeners: Synchronized[int],
     log_level: str,
+    allow_unencrypted: bool = False,
 ) -> None:
     """Entry point for the worker subprocess."""
     logging.basicConfig(
@@ -189,5 +192,6 @@ def worker_main(
         audio_queue=audio_queue,
         status_queue=status_queue,
         total_listeners=total_listeners,
+        allow_unencrypted=allow_unencrypted,
     )
     asyncio.run(worker.run())

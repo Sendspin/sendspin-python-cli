@@ -27,7 +27,7 @@ from aiosendspin.server.push_stream import PushStream
 
 from sendspin.utils import create_task
 
-from .server import PartyPairingStore, SendspinPlayerServer
+from .server import SendspinPlayerServer
 from .source import AudioSource, decode_audio
 
 if TYPE_CHECKING:
@@ -83,6 +83,7 @@ class ServeConfig:
     port: int = 8927
     name: str = "Sendspin Server"
     clients: list[str] | None = None
+    allow_unencrypted: bool = False
 
 
 def _windows_exception_handler(loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
@@ -124,7 +125,7 @@ async def run_server(config: ServeConfig) -> int:
         loop=event_loop,
         identity=Identity.generate(),
         server_name=config.name,
-        pairing_store=PartyPairingStore(),
+        allow_unencrypted=config.allow_unencrypted,
     )
 
     client_connected = asyncio.Event()
@@ -298,5 +299,6 @@ async def run_server_multi(config: ServeConfig, *, workers: int, log_level: str)
         name=config.name,
         workers=workers,
         log_level=log_level,
+        allow_unencrypted=config.allow_unencrypted,
     )
     return await coordinator.run()

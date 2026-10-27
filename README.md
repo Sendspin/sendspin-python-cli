@@ -454,6 +454,12 @@ uvx sendspin serve /path/to/media.mp3
 sendspin serve --demo --client ws://192.168.1.50:8927/sendspin --client ws://192.168.1.51:8927/sendspin
 ```
 
+By default, only players that support encryption can connect. Add `--allow-unencrypted` to also accept older players from before the Sendspin 1.0 release candidate:
+
+```bash
+sendspin serve --demo --allow-unencrypted
+```
+
 ### Multi-Worker Mode
 
 For serving many concurrent listeners, use `--workers` to run multiple server processes behind a reverse proxy:

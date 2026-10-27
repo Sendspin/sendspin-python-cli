@@ -381,6 +381,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Number of server worker processes (default: 1)",
     )
+    serve_parser.add_argument(
+        "--allow-unencrypted",
+        action="store_true",
+        help="Accept older players that don't support encryption",
+    )
 
     # Daemon subcommand
     daemon_parser = subparsers.add_parser(
@@ -713,6 +718,7 @@ async def _run_serve_mode(args: argparse.Namespace) -> int:
         port=args.port,
         name=args.name,
         clients=args.clients or settings.clients,
+        allow_unencrypted=args.allow_unencrypted,
     )
     if args.workers < 1:
         print("Error: --workers must be at least 1")
