@@ -80,13 +80,8 @@ class ServeWorker:
                     stream = self._get_stream()
                     if stream is None:
                         continue
-                    fmt = AudioFormat(
-                        sample_rate=msg.sample_rate,
-                        bit_depth=msg.bit_depth,
-                        channels=msg.channels,
-                    )
                     try:
-                        stream.prepare_audio(msg.pcm_bytes, fmt)
+                        stream.prepare_audio(msg.pcm_bytes, _chunk_format(msg))
                         await stream.commit_audio(play_start_us=msg.play_start_us)
                     except StreamStoppedError:
                         # All clients disconnected — stream was stopped.
@@ -170,6 +165,14 @@ class ServeWorker:
         if self._server is not None:
             with suppress(Exception):
                 await self._server.close()
+
+
+def _chunk_format(chunk: AudioChunk) -> AudioFormat:
+    return AudioFormat(
+        sample_rate=chunk.sample_rate,
+        bit_depth=chunk.bit_depth,
+        channels=chunk.channels,
+    )
 
 
 def worker_main(
