@@ -65,6 +65,7 @@ class ServeCoordinator:
         name: str,
         workers: int,
         log_level: str,
+        allow_unencrypted: bool = False,
     ) -> None:
         self.source = source
         self.source_format = source_format
@@ -72,6 +73,7 @@ class ServeCoordinator:
         self.name = name
         self.workers = workers
         self.log_level = log_level
+        self.allow_unencrypted = allow_unencrypted
         self.worker_ports = [port + i for i in range(workers)]
 
         # IPC
@@ -147,6 +149,7 @@ class ServeCoordinator:
                     self._status_queue,
                     self._total_listeners,
                     self.log_level,
+                    self.allow_unencrypted,
                 ),
             )
             p.start()

@@ -151,3 +151,26 @@ def test_worker_clears_group_when_last_client_disconnects(
     assert worker._active_group is None
     assert worker._stream is None
     mock_stream.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_worker_passes_allow_unencrypted_to_server(
+    audio_queue: mp.Queue,
+    status_queue: mp.Queue,
+    total_listeners: mp.Value,
+) -> None:
+    worker = ServeWorker(
+        worker_id=0,
+        port=8928,
+        audio_queue=audio_queue,
+        status_queue=status_queue,
+        total_listeners=total_listeners,
+        allow_unencrypted=True,
+    )
+
+    with patch("sendspin.serve.worker.SendspinPlayerServer.start_server", new_callable=AsyncMock):
+        await worker._start_server()
+
+    assert worker._server is not None
+    assert worker._server.allow_unencrypted
+    await worker._shutdown_server()
