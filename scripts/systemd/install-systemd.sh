@@ -202,7 +202,7 @@ if sudo -u "$DAEMON_USER" bash -l -c "uv tool list" 2>/dev/null | grep -q "^send
     sudo -u "$DAEMON_USER" bash -l -c "uv tool upgrade sendspin" || { echo -e "${R}Failed${N}"; exit 1; }
     echo -e "  ${C}Release notes:${N} https://github.com/Sendspin/sendspin-cli/releases"
 else
-    sudo -u "$DAEMON_USER" bash -l -c "uv tool install sendspin" || { echo -e "${R}Failed${N}"; exit 1; }
+    sudo -u "$DAEMON_USER" bash -l -c "uv tool install --python 3.13 sendspin" || { echo -e "${R}Failed${N}"; exit 1; }
 fi
 
 # Grab the proper bin path from uv (in case it's non-standard)
