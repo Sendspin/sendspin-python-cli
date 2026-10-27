@@ -98,7 +98,7 @@ wheels = [
 
 [[package]]
 name = "aiosendspin"
-version = "10.2.1"
+version = "10.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -109,9 +109,9 @@ dependencies = [
     { name = "orjson" },
     { name = "zeroconf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/59/74/20836f6e32e902c72796b6731a7da86f062c64a760b93b6f62f9cc3ff873/aiosendspin-10.2.1.tar.gz", hash = "sha256:94ef9214e7b14c52c9d792b87975ec7638be3c62fcfb61aca9dc9c9559563c55", size = 348450, upload-time = "2026-10-19T15:21:47.207Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/14/186d35bc945c7d05cbfab77c7504beadadac58193e413ae0aba2264642e7/aiosendspin-10.2.2.tar.gz", hash = "sha256:f848fff1822dd6b6ed11f40322e846751195a53420a88bb76bf3584a15f7818e", size = 349056, upload-time = "2026-10-27T15:07:40.903Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/97/0b7344c0b7d446a2228fb90ba380fd08af7f9b96941988608723f849ced1/aiosendspin-10.2.1-py3-none-any.whl", hash = "sha256:22aeeaa53bd383a9cd026a5b505fc3913a021bbc9d10011684e256e0691a44e1", size = 356651, upload-time = "2026-10-19T15:21:45.718Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/f3/9d76176833d5dff50bd395fab454983ecd50c96a613f02ce55e22fbe726e/aiosendspin-10.2.2-py3-none-any.whl", hash = "sha256:7d6854d4af70b1157f803f8d5d3e39c20725b30de418b8ebda1084f5806cb7bb", size = 357040, upload-time = "2026-10-27T15:07:39.199Z" },
 ]
 
 [package.optional-dependencies]
@@ -1382,7 +1382,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiosendspin", extras = ["server"], specifier = "~=10.2.1" },
+    { name = "aiosendspin", extras = ["server"], specifier = "~=10.2.2" },
     { name = "aiosendspin-mpris", specifier = "~=2.1.1" },
     { name = "av", specifier = ">=15.0.0" },
     { name = "codespell", marker = "extra == 'test'", specifier = "==2.4.1" },
