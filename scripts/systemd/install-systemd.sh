@@ -86,6 +86,9 @@ install_package() {
     esac
 
     if prompt_yn "Install now? ($CMD)"; then
+        if [ "$PKG_MGR" = "apt-get" ]; then
+            apt-get update || true
+        fi
         $CMD || { echo -e "${R}Failed${N}"; return 1; }
         return 0
     else
@@ -199,19 +202,11 @@ if sudo -u "$DAEMON_USER" bash -l -c "uv tool list" 2>/dev/null | grep -q "^send
     sudo -u "$DAEMON_USER" bash -l -c "uv tool upgrade sendspin" || { echo -e "${R}Failed${N}"; exit 1; }
     echo -e "  ${C}Release notes:${N} https://github.com/Sendspin/sendspin-cli/releases"
 else
-    sudo -u "$DAEMON_USER" bash -l -c "uv tool install sendspin" || { echo -e "${R}Failed${N}"; exit 1; }
+    sudo -u "$DAEMON_USER" bash -l -c "uv tool install --python 3.13 sendspin" || { echo -e "${R}Failed${N}"; exit 1; }
 fi
 
 # Grab the proper bin path from uv (in case it's non-standard)
 SENDSPIN_BIN="$(sudo -u "$DAEMON_USER" bash -l -c "uv tool dir --bin")/sendspin"
-
-# Function to generate client_id from name (convert to snake-case)
-# e.g., "Kitchen Music Player" -> "kitchen-music-player"
-generate_client_id() {
-    local name="$1"
-    # Convert to lowercase, replace spaces/special chars with hyphens, remove consecutive hyphens
-    echo "$name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\+/-/g' | sed 's/^-\+\|-\+$//g'
-}
 
 # Paths for current JSON config
 CONFIG_DIR="$DAEMON_HOME/.config/sendspin"
@@ -227,8 +222,6 @@ else
     # No existing config — prompt and create one
     echo -e "\n${C}Configuration${N}"
     NAME=$(prompt_input "Client friendly name (shown in the UI)" "$(hostname)")
-    DEFAULT_CLIENT_ID="$(generate_client_id "$NAME")"
-    CLIENT_ID=$(prompt_input "Client ID (used in settings and scripts)" "$DEFAULT_CLIENT_ID")
 
     echo -e "\n${C}Audio Devices${N}"
     # List audio devices - try to detect session environment for accuracy
@@ -255,15 +248,13 @@ else
         sudo -u "$DAEMON_USER" tee "$CONFIG_FILE" > /dev/null << EOF
 {
   "name": "$NAME",
-  "client_id": "$CLIENT_ID",
   "audio_device": "$DEVICE"
 }
 EOF
     else
         sudo -u "$DAEMON_USER" tee "$CONFIG_FILE" > /dev/null << EOF
 {
-  "name": "$NAME",
-  "client_id": "$CLIENT_ID"
+  "name": "$NAME"
 }
 EOF
     fi
