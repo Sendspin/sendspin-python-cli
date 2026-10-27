@@ -261,7 +261,9 @@ class ServeCoordinator:
                 audio_source = await decode_audio(self.source, source_format=self.source_format)
                 fmt = audio_source.format
 
-                play_start_us = server_now_us() + DEFAULT_INITIAL_DELAY_US
+                stream_start_us = server_now_us() + DEFAULT_INITIAL_DELAY_US
+                play_start_us = stream_start_us
+                samples_sent = 0
 
                 async for pcm_chunk in audio_source.generator:
                     if self._shutdown_requested:
@@ -281,8 +283,6 @@ class ServeCoordinator:
                         last_stats_time = now
 
                     frame_stride = (fmt.bit_depth // 8) * fmt.channels
-                    sample_count = len(pcm_chunk) // frame_stride
-                    chunk_duration_us = int(sample_count * 1_000_000 / fmt.sample_rate)
 
                     chunk_msg = AudioChunk(
                         pcm_bytes=pcm_chunk,
@@ -294,7 +294,9 @@ class ServeCoordinator:
                     for queue in self._audio_queues:
                         queue.put(chunk_msg)
 
-                    play_start_us += chunk_duration_us
+                    # Stamp from the total sample count so rounding never puts a chunk before the previous one's end.
+                    samples_sent += len(pcm_chunk) // frame_stride
+                    play_start_us = stream_start_us + samples_sent * 1_000_000 // fmt.sample_rate
 
                     now_us = server_now_us()
                     ahead_us = play_start_us - DEFAULT_INITIAL_DELAY_US - now_us
