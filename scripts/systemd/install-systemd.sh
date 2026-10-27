@@ -86,6 +86,9 @@ install_package() {
     esac
 
     if prompt_yn "Install now? ($CMD)"; then
+        if [ "$PKG_MGR" = "apt-get" ]; then
+            apt-get update || true
+        fi
         $CMD || { echo -e "${R}Failed${N}"; return 1; }
         return 0
     else
