@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing as mp
+from collections import deque
 from multiprocessing.sharedctypes import Synchronized
 from contextlib import suppress
 
+from aiosendspin.clock import RawMonotonicClock
 from aiosendspin.noise import Identity
 from aiosendspin.server import (
     ClientAddedEvent,
@@ -59,6 +61,8 @@ class ServeWorker:
         self._server: SendspinPlayerServer | None = None
         self._active_group: SendspinGroup | None = None
         self._stream: PushStream | None = None
+        self._clock = RawMonotonicClock()
+        self._recent_chunks: deque[AudioChunk] = deque()
 
     async def run(self) -> None:
         """Main worker loop: start server, consume audio queue."""
@@ -69,6 +73,7 @@ class ServeWorker:
             self._status_queue.put(WorkerListening(worker_id=self.worker_id, port=self.port))
 
             # Consume audio chunks from coordinator
+            fed_stream: PushStream | None = None
             while True:
                 msg = await loop.run_in_executor(None, self._audio_queue.get)
 
@@ -77,16 +82,15 @@ class ServeWorker:
                     break
 
                 if isinstance(msg, AudioChunk):
+                    self._keep_recent_chunk(msg)
                     stream = self._get_stream()
                     if stream is None:
                         continue
-                    fmt = AudioFormat(
-                        sample_rate=msg.sample_rate,
-                        bit_depth=msg.bit_depth,
-                        channels=msg.channels,
-                    )
                     try:
-                        stream.prepare_audio(msg.pcm_bytes, fmt)
+                        if stream is not fed_stream:
+                            fed_stream = stream
+                            self._prepare_recent_audio(stream)
+                        stream.prepare_audio(msg.pcm_bytes, _chunk_format(msg))
                         await stream.commit_audio(play_start_us=msg.play_start_us)
                     except StreamStoppedError:
                         # All clients disconnected — stream was stopped.
@@ -158,6 +162,28 @@ class ServeWorker:
         count = len(self._server.connected_clients)
         self._status_queue.put(WorkerClientCount(worker_id=self.worker_id, count=count))
 
+    def _keep_recent_chunk(self, chunk: AudioChunk) -> None:
+        """Keep the chunks that haven't finished playing, for a stream that starts later."""
+        now_us = self._clock.now_us()
+        while self._recent_chunks and _chunk_end_us(self._recent_chunks[0]) <= now_us:
+            self._recent_chunks.popleft()
+        # Restarting the audio source begins a new timeline that the kept chunks don't lead into.
+        if self._recent_chunks and not (
+            0 <= chunk.play_start_us - _chunk_end_us(self._recent_chunks[-1]) <= 1
+        ):
+            self._recent_chunks.clear()
+        self._recent_chunks.append(chunk)
+
+    def _prepare_recent_audio(self, stream: PushStream) -> None:
+        """Queue the kept chunks before the newest one, so a new stream starts near real time."""
+        *history, _ = self._recent_chunks
+        for chunk in history:
+            stream.prepare_historical_audio(
+                chunk.pcm_bytes,
+                _chunk_format(chunk),
+                start_time_us=history[0].play_start_us,
+            )
+
     def _get_stream(self) -> PushStream | None:
         """Get the active PushStream, or None if no clients are connected."""
         return self._stream
@@ -170,6 +196,19 @@ class ServeWorker:
         if self._server is not None:
             with suppress(Exception):
                 await self._server.close()
+
+
+def _chunk_format(chunk: AudioChunk) -> AudioFormat:
+    return AudioFormat(
+        sample_rate=chunk.sample_rate,
+        bit_depth=chunk.bit_depth,
+        channels=chunk.channels,
+    )
+
+
+def _chunk_end_us(chunk: AudioChunk) -> int:
+    samples = len(chunk.pcm_bytes) // ((chunk.bit_depth // 8) * chunk.channels)
+    return chunk.play_start_us + samples * 1_000_000 // chunk.sample_rate
 
 
 def worker_main(
