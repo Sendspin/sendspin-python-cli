@@ -15,6 +15,7 @@ import signal
 import time
 from contextlib import suppress
 
+from aiosendspin.clock import RawMonotonicClock
 from aiosendspin.server.push_stream import DEFAULT_INITIAL_DELAY_US
 
 from sendspin.serve import get_local_ip
@@ -33,24 +34,6 @@ logger = logging.getLogger(__name__)
 
 # Keep at least 5s of buffer on workers/connected clients
 MAX_BUFFER_AHEAD_US = 5_000_000
-
-
-def server_now_us() -> int:
-    """Current time in microseconds on the aiosendspin server clock domain.
-
-    The aiosendspin server timestamps audio with ``RawMonotonicClock``
-    (``CLOCK_MONOTONIC_RAW`` on Linux), which — unlike
-    ``time.monotonic()`` — is not slewed by NTP/adjtime
-    (``aiosendspin/clock.py``). ``play_start_us`` is an absolute timestamp
-    consumed verbatim by workers/clients, so it must be sampled from the
-    same clock domain; ``time.monotonic()`` drifts away from it by every
-    NTP adjustment since boot (measured 102 s apart on one Linux host).
-    Interval-only measurements (stats/health timers) stay on
-    ``time.monotonic()``, which is the correct clock for durations.
-    """
-    if hasattr(time, "CLOCK_MONOTONIC_RAW"):
-        return time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 1_000
-    return time.monotonic_ns() // 1_000
 
 
 class ServeCoordinator:
@@ -89,6 +72,8 @@ class ServeCoordinator:
         self._run_task: asyncio.Task[int] | None = None
         self._failed_workers: set[int] = set()
         self._reported_crashed: set[int] = set()
+        # Workers schedule audio on this clock, so play_start_us must come from it too.
+        self._clock = RawMonotonicClock()
 
     async def run(self) -> int:
         """Main coordinator loop."""
@@ -264,7 +249,7 @@ class ServeCoordinator:
                 audio_source = await decode_audio(self.source, source_format=self.source_format)
                 fmt = audio_source.format
 
-                stream_start_us = server_now_us() + DEFAULT_INITIAL_DELAY_US
+                stream_start_us = self._clock.now_us() + DEFAULT_INITIAL_DELAY_US
                 play_start_us = stream_start_us
                 samples_sent = 0
 
@@ -301,7 +286,7 @@ class ServeCoordinator:
                     samples_sent += len(pcm_chunk) // frame_stride
                     play_start_us = stream_start_us + samples_sent * 1_000_000 // fmt.sample_rate
 
-                    now_us = server_now_us()
+                    now_us = self._clock.now_us()
                     ahead_us = play_start_us - DEFAULT_INITIAL_DELAY_US - now_us
                     if ahead_us > MAX_BUFFER_AHEAD_US:
                         await asyncio.sleep((ahead_us - MAX_BUFFER_AHEAD_US) / 1_000_000)
