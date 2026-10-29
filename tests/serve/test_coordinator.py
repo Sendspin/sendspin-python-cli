@@ -6,7 +6,9 @@ from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock, patch
 
 import pytest
+from aiosendspin.clock import RawMonotonicClock
 from aiosendspin.server import AudioFormat
+from aiosendspin.server.push_stream import DEFAULT_INITIAL_DELAY_US
 
 from sendspin.serve.coordinator import ServeCoordinator
 from sendspin.serve.ipc import AudioChunk, WorkerClientCount, WorkerError, WorkerListening
@@ -124,3 +126,24 @@ async def test_chunk_timestamps_follow_sample_count(coordinator: ServeCoordinato
         await coordinator._stream_audio_loop()
 
     assert sent[3].play_start_us - sent[0].play_start_us == 256_000
+
+
+@pytest.mark.asyncio
+async def test_chunk_timestamps_use_worker_clock(coordinator: ServeCoordinator) -> None:
+    """Chunks are stamped on the clock the workers schedule audio with."""
+    sent: list[AudioChunk] = []
+    coordinator._audio_queues = [MagicMock(put=sent.append)]
+    coordinator._total_listeners.value = 1
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        yield bytes(4096 * 4)
+        coordinator._shutdown_requested = True
+
+    source = MagicMock(generator=chunks(), format=AudioFormat(48000, 16, 2))
+    with (
+        patch("sendspin.serve.coordinator.decode_audio", return_value=source),
+        patch.object(RawMonotonicClock, "now_us", return_value=1_000_000),
+    ):
+        await coordinator._stream_audio_loop()
+
+    assert sent[0].play_start_us == 1_000_000 + DEFAULT_INITIAL_DELAY_US
