@@ -253,6 +253,26 @@ class AudioPlayer:
             device: Audio device to use.
         """
         pcm_format = audio_format.pcm_format
+        if self._stream is not None and self._format == pcm_format:
+            logger.debug(
+                "Audio format unchanged (%dHz/%d-bit/%dch); keeping stream open",
+                pcm_format.sample_rate,
+                pcm_format.bit_depth,
+                pcm_format.channels,
+            )
+            return
+        # Stop the old stream synchronously BEFORE swapping the format. The
+        # close below is async, and an in-flight old-stream callback computing
+        # against the new format sizes its buffer wrong and crashes
+        # (ValueError: memoryview assignment, seen live on resume-after-
+        # announce). stop() blocks until in-flight callbacks finish, and this
+        # runs on the worker thread, never in a callback, so no deadlock.
+        # _call_stream logs internally. Also drop the last-frame cache: it
+        # carries the old frame size into the slow correction path.
+        old_stream = self._stream
+        if old_stream is not None:
+            self._call_stream(old_stream.stop)
+        self._last_output_frame = b""
         self._format = pcm_format
         self._close_stream()
 
@@ -340,17 +360,16 @@ class AudioPlayer:
         self._stream_executor.shutdown(wait=True)
 
     def close_stream(self) -> None:
-        """Drop queued audio and fully close the stream to release the device.
+        """Drop queued audio but keep the stream open on silence.
 
-        Unlike clear(), which only stops the stream (leaving the device FD open),
-        this fully closes the PortAudio stream. Call when the server signals
-        end-of-stream; the stream will be recreated by set_format() when the
-        next track begins.
+        The callback renders silence while starved, so the audio device
+        stays open and DACs hold lock across pause/resume and across
+        stream end/start pairs. The device is released by stop()
+        (shutdown) and by set_format() when the format actually changes.
         """
         if self._closed:
             return
         self.clear()
-        self._close_stream()
 
     def clear(self) -> None:
         """Drop all queued audio chunks."""
@@ -359,13 +378,11 @@ class AudioPlayer:
         # Clear deferred operation flag
         self._clear_requested = False
 
-        # Stop the audio stream (but don't close it) to release ALSA device
-        # This allows the device to transition to 'closed' state when paused.
-        # The stream restarts when new chunks arrive in submit().
-        self._stream_started = False
-        stream = self._stream
-        if stream is not None:
-            self._stream_executor.submit(self._call_stream, stream.stop)
+        # Keep the audio stream running: with the queue drained the callback
+        # renders silence, so the device stays open and DACs that click a
+        # muting relay on lock loss (e.g. XMOS USB) stay silent across
+        # pause/resume/seek. Chunks submitted after the clear play on the
+        # still-running stream; submit() restarts it only if never started.
 
         # Drain all queued chunks
         while True:
@@ -428,8 +445,14 @@ class AudioPlayer:
 
         assert self._format is not None
 
-        bytes_needed = frames * self._format.frame_size
         output_buffer = memoryview(outdata).cast("B")
+        # Trust the buffer, not the parameters: a stale callback racing a
+        # format switch can arrive with frames sized for another format.
+        # Every slice below derives from bytes_needed, so bounding it here
+        # bounds them all (bulk reads are capped separately to keep cursor
+        # accounting consistent).
+        got = frames * self._format.frame_size
+        bytes_needed = got if got < len(output_buffer) else len(output_buffer)
 
         if status:
             # Detect underflow and request re-anchor (processed by main thread)
@@ -479,6 +502,22 @@ class AudioPlayer:
                     bytes_written += silence_bytes
             else:
                 frame_size = self._format.frame_size
+
+                # Hard guarantee: never read more frames than fit the buffer.
+                # A stale callback racing a format switch would otherwise size
+                # its read from the new format against the old buffer and crash
+                # (ValueError: memoryview assignment, seen live). Capped reads
+                # degrade to a short trailing silence fill instead.
+                max_frames = (
+                    (len(output_buffer) - bytes_written) // frame_size if frame_size > 0 else 0
+                )
+                if frames > max_frames:
+                    logger.debug(
+                        "Capping stale callback read: %d frames to %d",
+                        frames,
+                        max(0, max_frames),
+                    )
+                    frames = max(0, max_frames)
 
                 # Thread-safe snapshot of correction schedule (prevent mid-callback changes)
                 insert_every_n = self._insert_every_n_frames
@@ -566,6 +605,12 @@ class AudioPlayer:
                     # Write cadence state back
                     self._frames_until_next_insert = insert_counter
                     self._frames_until_next_drop = drop_counter
+
+            # Trailing guard: never hand PortAudio uninitialized bytes. A
+            # capped stale read above can come up short; pad the tail.
+            if bytes_written < bytes_needed:
+                self._fill_silence(output_buffer, bytes_written, bytes_needed - bytes_written)
+                bytes_written = bytes_needed
 
         except Exception:
             logger.exception("Error in audio callback")
@@ -907,9 +952,13 @@ class AudioPlayer:
         self._sync_error_filtered_us = self._sync_error_filter.offset
 
     def _fill_silence(self, output_buffer: memoryview, offset: int, num_bytes: int) -> None:
-        """Fill output buffer range with silence."""
-        if num_bytes > 0:
-            output_buffer[offset : offset + num_bytes] = b"\x00" * num_bytes
+        """Fill output buffer range with silence, trimmed to the buffer."""
+        end = offset + num_bytes
+        buf = len(output_buffer)
+        if end > buf:
+            end = buf
+        if end > offset:
+            output_buffer[offset:end] = b"\x00" * (end - offset)
 
     def _apply_volume(self, output_buffer: memoryview) -> None:
         """
