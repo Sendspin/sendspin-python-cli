@@ -2,6 +2,8 @@
 
 Sendspin CLI is a synchronized audio player client for the [Sendspin Protocol](https://github.com/Sendspin/website/blob/main/src/spec.md). It connects to Sendspin servers via WebSocket, receives time-synchronized audio streams, and plays them back with precise timing to enable multi-room synchronized audio.
 
+It has three modes: two players, the TUI (`sendspin`) and the daemon (`sendspin daemon`), and a server, `sendspin serve`, called **Sendspin Party** in the README. Serve mode streams a file or URL to nearby clients and to browsers through an embedded web player. It runs on the server side of aiosendspin, so it breaks in different ways than the players. Test it whenever aiosendspin or the protocol changes.
+
 **Note**: If uncertain about how something in Sendspin is supposed to work, fetch and refer to the [protocol specification](https://github.com/Sendspin/website/blob/main/src/spec.md) for authoritative implementation details.
 
 ## Architecture
@@ -37,6 +39,30 @@ Sendspin CLI is a synchronized audio player client for the [Sendspin Protocol](h
 │ - Playback  │ │ - mDNS        │ │              │
 │ - Time sync │ │ - Servers     │ │ - WebSocket  │
 └─────────────┘ └───────────────┘ └──────────────┘
+```
+
+Server mode (`sendspin serve`, Sendspin Party) is a separate path from `cli.py`:
+
+```
+              cli.py serve
+                    │
+                    ▼
+┌───────────────────────────────┐      ┌────────────────────┐
+│ serve/__init__.py             │      │ serve/server.py    │
+│                               │      │                    │
+│ - Decoding (source.py)        │─────▶│ - aiosendspin      │
+│ - Workers (coordinator.py,    │      │   SendspinServer   │
+│   worker.py, ipc.py)          │      │ - Web player at /  │
+│ - Chromecast (chromecast.py)  │      │ - Party pairing    │
+└───────────────────────────────┘      └────────────────────┘
+                                                 │
+                                                 ▼
+                                       ┌────────────────────┐
+                                       │ serve/web/         │
+                                       │                    │
+                                       │ - Browser player   │
+                                       │ - sendspin-js (CDN)│
+                                       └────────────────────┘
 ```
 
 ## File Responsibilities
@@ -93,6 +119,15 @@ Daemon mode for headless operation (via `sendspin daemon` or deprecated `--headl
 - **Event logging**: Prints events to stdout instead of UI
 - **Signal handling**: SIGINT/SIGTERM for graceful shutdown
 
+### `sendspin/serve/` (Server Mode Package, "Sendspin Party")
+Runs a Sendspin server that plays one audio file or URL in a loop to every client that connects. Responsibilities:
+- **`__init__.py`**: `run_server()` and `run_server_multi()`. Starts the server, streams the source into a group, prints the share URL and a QR code, and connects to `--client` URLs and Chromecasts
+- **`server.py`**: `SendspinPlayerServer`, an aiosendspin `SendspinServer` that also serves the web player at `/` and a listener count at `/api/status`. `PartyPairingStore` approves every client for unpaired playback, since anyone who opens the page may listen
+- **`source.py`**: Decodes local files and URLs to PCM with PyAV (`av`)
+- **`coordinator.py`, `worker.py`, `ipc.py`**: `--workers N` mode. The coordinator decodes once and fans timestamped PCM out to worker processes on consecutive ports, which sit behind a reverse proxy
+- **`chromecast.py`**: Casts the Sendspin receiver app to a Chromecast and points it at this server (optional `cast` extra)
+- **`web/`**: `index.html`, `app.js` and `styles.css` for the browser player. `app.js` loads `@sendspin/sendspin-js` from a CDN at a pinned version, which must speak the same protocol version as the pinned aiosendspin, including encryption
+
 ### `sendspin/audio_devices.py`
 Audio device resolution and ALSA device listing. Responsibilities:
 - **Device resolution**: Resolves `--audio-device` argument by index, name prefix, or raw ALSA device name (via `resolve_audio_device()`)
@@ -113,7 +148,9 @@ Package entry point, exports `main` from `cli.py`.
 
 ## Key Dependencies
 
-- **aiosendspin**: Async Sendspin protocol client (WebSocket, time sync, messages)
+- **aiosendspin**: Async Sendspin protocol library. The players use its client, and serve mode uses its server
+- **sendspin-js**: Browser Sendspin player used by the serve web player, loaded from a CDN in `serve/web/app.js`
+- **av** (PyAV): Decodes serve mode's audio sources
 - **sounddevice**: PortAudio wrapper for audio I/O
 - **rich**: Terminal UI rendering
 - **readchar**: Cross-platform keyboard input
@@ -128,7 +165,15 @@ uv run sendspin                                # TUI mode with auto-discovery
 uv run sendspin --url ws://host:port/sendspin  # TUI mode with direct connection
 uv run sendspin daemon                         # Daemon mode (headless) with auto-discovery
 uv run sendspin daemon --url ws://host:port/sendspin  # Daemon mode with direct connection
+uv run sendspin serve --demo                   # Server mode (Sendspin Party); open the printed URL in a browser
 ```
+
+### Bumping aiosendspin (or any protocol change)
+Every mode depends on aiosendspin, and each in its own way. Check them all:
+1. **Players:** run the TUI and the daemon against a real server (Music Assistant), including pairing, track changes, the visualizer toggle (`v`) and the output delay.
+2. **Server-initiated daemon with two servers:** this exercises admission (`another_server`, `concurrent_attempt`).
+3. **Serve mode:** run `sendspin serve --demo`, open the web player in a browser and confirm it plays. Check the server log for refused connections. If the protocol changed, update the pinned sendspin-js version in `serve/web/app.js` to match.
+4. **Grep for removed or renamed APIs** across `sendspin/`, including `sendspin/serve/`, not only the player code.
 
 ### Development commands
 ```bash
