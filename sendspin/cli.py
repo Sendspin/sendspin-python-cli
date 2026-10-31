@@ -211,6 +211,15 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         ),
     )
     target.add_argument(
+        "--force-audio-format",
+        action="store_true",
+        default=argparse.SUPPRESS if suppress_defaults else False,
+        help=(
+            "Advertise only the --audio-format as supported format "
+            "instead of just preferring it."
+        ),
+    )
+    target.add_argument(
         "--disable-mpris",
         action="store_true",
         default=argparse.SUPPRESS if suppress_defaults else False,
@@ -453,6 +462,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Preferred audio format as codec:sample_rate:bit_depth:channels "
             "(e.g., flac:48000:24:2). Verified against the audio device on startup."
+        ),
+    )
+    daemon_parser.add_argument(
+        "--force-audio-format",
+        action="store_true",
+        default=False,
+        help=(
+            "Advertise only the --audio-format as supported format "
+            "instead of just preferring it."
         ),
     )
     daemon_parser.add_argument(
@@ -758,6 +776,7 @@ async def _run_daemon_mode(
         listen_port=args.listen_port,
         use_mpris=args.use_mpris,
         preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
+        force_preferred_format=args.force_audio_format,
         volume_controller=volume_controller,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
@@ -880,6 +899,8 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
     args.use_mpris = not args.disable_mpris and settings.use_mpris
     if args.audio_format is None:
         args.audio_format = settings.audio_format
+    if args.force_audio_format and args.audio_format is None:
+        raise CLIError("--force-audio-format requires --audio-format", 1)
     if args.hardware_volume is None:
         if settings.use_hardware_volume is not None:
             args.hardware_volume = settings.use_hardware_volume
@@ -979,6 +1000,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         output_delay_ms=args.output_delay_ms,
         use_mpris=args.use_mpris,
         preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
+        force_preferred_format=args.force_audio_format,
         volume_controller=volume_controller,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,

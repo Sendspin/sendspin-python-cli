@@ -234,6 +234,7 @@ class AppArgs:
     output_delay_ms: float | None = None
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
+    force_preferred_format: bool = False
     volume_controller: VolumeController | None = None
     hook_start: str | None = None
     hook_stop: str | None = None
@@ -493,7 +494,9 @@ class SendspinApp:
 
             # Detect supported audio formats for the output device
             supported_formats = detect_supported_audio_formats(args.audio_device)
-            if args.preferred_format is not None:
+            if args.preferred_format is not None and args.force_preferred_format:
+                supported_formats = [args.preferred_format]
+            elif args.preferred_format is not None:
                 supported_formats = [f for f in supported_formats if f != args.preferred_format]
                 supported_formats.insert(0, args.preferred_format)
             self._supported_formats = supported_formats
