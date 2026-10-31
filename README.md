@@ -117,6 +117,7 @@ Settings are stored in `~/.config/sendspin/`:
   "name": "Living Room",
   "audio_device": "2",
   "audio_format": "flac:48000:24:2",
+  "force_audio_format": false,
   "log_level": "INFO",
   "listen_port": 8927,
   "use_mpris": true,
@@ -151,6 +152,7 @@ Settings are stored in `~/.config/sendspin/`:
 | `name` | string | All | Friendly name for client or server (`--name`) |
 | `audio_device` | string | TUI/daemon | Audio device index, name prefix, or ALSA device name (`--audio-device`) |
 | `audio_format` | string | TUI/daemon | Preferred audio format (`--audio-format`, e.g., `flac:48000:24:2`) |
+| `force_audio_format` | boolean | TUI/daemon | Advertise only `audio_format` as supported (`--force-audio-format`, default: false). Requires `audio_format` |
 | `log_level` | string | All | Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL |
 | `listen_port` | integer | daemon/serve | Listen port (`--port`, default: 8927) |
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
@@ -288,6 +290,18 @@ The format string uses the pattern `codec:sample_rate:bit_depth:channels`:
 - **channels**: Channel count (`1` for mono, `2` for stereo)
 
 The specified format is validated against the audio device on startup. If the device doesn't support it, the player will exit with an error.
+
+#### Forcing the audio format
+
+`--force-audio-format` advertises only the format from `--audio-format` (or the saved `audio_format` setting) instead of just preferring it, so the server cannot pick anything else. It requires an audio format from the CLI or settings. It can also be saved as `"force_audio_format": true`.
+
+```bash
+# TUI
+sendspin --audio-format pcm:48000:24:2 --force-audio-format
+
+# Daemon
+sendspin daemon --audio-format pcm:48000:24:2 --force-audio-format
+```
 
 ### System Volume Control
 

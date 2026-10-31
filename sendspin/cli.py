@@ -899,6 +899,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
     args.use_mpris = not args.disable_mpris and settings.use_mpris
     if args.audio_format is None:
         args.audio_format = settings.audio_format
+    args.force_audio_format = args.force_audio_format or settings.force_audio_format
     if args.force_audio_format and args.audio_format is None:
         raise CLIError("--force-audio-format requires --audio-format", 1)
     if args.hardware_volume is None:
