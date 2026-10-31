@@ -18,6 +18,7 @@ from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
 from aiosendspin.models.types import PairAbortReason, PlayerCommand, Roles
 
 from sendspin.audio_devices import AudioDevice, detect_supported_audio_formats
+from sendspin.audio import ClockSource
 from sendspin.audio_connector import AudioStreamHandler
 from sendspin.hooks import run_hook
 from sendspin.settings import ClientSettings
@@ -51,6 +52,7 @@ class DaemonArgs:
     manufacturer: str | None = None
     product_name: str | None = None
     interface: str | None = None
+    clock_source: ClockSource = ClockSource.SERVER
 
 
 class SendspinDaemon:
@@ -132,6 +134,8 @@ class SendspinDaemon:
     async def run(self) -> int:
         """Run the daemon."""
         logger.info("Starting Sendspin daemon: %s", self._args.identity.peer_id)
+        if self._args.clock_source == ClockSource.DAC:
+            logger.info("Clock source: DAC (bit-perfect, no drift correction; single-room only)")
         loop = asyncio.get_running_loop()
 
         # Store reference to current task so it can be cancelled on shutdown
@@ -163,6 +167,7 @@ class SendspinDaemon:
             on_format_change=self._handle_format_change,
             on_volume_change=self._on_volume_change,
             volume_controller=self._args.volume_controller,
+            clock_source=self._args.clock_source,
         )
         await self._audio_handler.read_initial_volume()
         await self._audio_handler.start_volume_monitor()

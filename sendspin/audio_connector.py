@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, cast
 from aiosendspin.models.core import StreamStartMessage
 from aiosendspin.models.types import AudioCodec
 
-from sendspin.audio import AudioPlayer
+from sendspin.audio import AudioPlayer, ClockSource
 from sendspin.audio_devices import AudioDevice
 from sendspin.decoder import FlacDecoder
 from sendspin.utils import create_task
@@ -86,8 +86,10 @@ class _AudioSyncWorker:
         use_software_volume: bool,
         volume: int,
         muted: bool,
+        clock_source: ClockSource = ClockSource.SERVER,
     ) -> None:
         self._audio_device = audio_device
+        self._clock_source = clock_source
         self._use_software_volume = use_software_volume
         self._initial_volume = volume
         self._initial_muted = muted
@@ -195,6 +197,7 @@ class _AudioSyncWorker:
             compute_server_time,
             now_us=self._now_us,
             is_clock_synced=self._is_clock_synced,
+            clock_source=self._clock_source,
         )
         current_format: AudioFormat | None = None
         flac_decoder: FlacDecoder | None = None
@@ -220,6 +223,12 @@ class _AudioSyncWorker:
                 continue
 
             if item_type is _CloseStreamWorkItem:
+                playout_us = player.end_of_stream_playout_us()
+                if playout_us > 0:
+                    # DAC clock: finish the drift remainder before closing.
+                    deadline = time.monotonic() + playout_us / 1_000_000 + 0.5
+                    while not player.is_drained() and time.monotonic() < deadline:
+                        time.sleep(0.005)
                 player.close_stream()
                 current_format = None  # force set_format() when next track begins
                 continue
@@ -350,6 +359,7 @@ class AudioStreamHandler:
         on_format_change: Callable[[str | None, int, int, int], None] | None = None,
         on_volume_change: Callable[[int, bool], None] | None = None,
         volume_controller: VolumeController | None = None,
+        clock_source: ClockSource = ClockSource.SERVER,
     ) -> None:
         """Initialize the audio stream handler.
 
@@ -361,8 +371,10 @@ class AudioStreamHandler:
             on_format_change: Callback for format changes (codec, sample_rate, bit_depth, channels).
             on_volume_change: Callback for volume changes.
             volume_controller: Optional external volume controller backend.
+            clock_source: Playback clock (SERVER corrects drift, DAC is bit-perfect).
         """
         self._audio_device = audio_device
+        self._clock_source = clock_source
         self._volume = volume
         self._muted = muted
         self._on_event = on_event
@@ -488,6 +500,7 @@ class AudioStreamHandler:
                 use_software_volume=not self.uses_external_volume_controller,
                 volume=self._volume,
                 muted=self._muted,
+                clock_source=self._clock_source,
             )
 
         self._audio_worker.start(

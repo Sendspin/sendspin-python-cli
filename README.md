@@ -117,6 +117,7 @@ Settings are stored in `~/.config/sendspin/`:
   "name": "Living Room",
   "audio_device": "2",
   "audio_format": "flac:48000:24:2",
+  "clock_source": "server",
   "log_level": "INFO",
   "listen_port": 8927,
   "use_mpris": true,
@@ -151,6 +152,7 @@ Settings are stored in `~/.config/sendspin/`:
 | `name` | string | All | Friendly name for client or server (`--name`) |
 | `audio_device` | string | TUI/daemon | Audio device index, name prefix, or ALSA device name (`--audio-device`) |
 | `audio_format` | string | TUI/daemon | Preferred audio format (`--audio-format`, e.g., `flac:48000:24:2`) |
+| `clock_source` | string | TUI/daemon | Playback clock: `server` (default, drift-corrected) or `dac` (bit-perfect, single-room) (`--clock-source`) |
 | `log_level` | string | All | Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL |
 | `listen_port` | integer | daemon/serve | Listen port (`--port`, default: 8927) |
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
@@ -288,6 +290,20 @@ The format string uses the pattern `codec:sample_rate:bit_depth:channels`:
 - **channels**: Channel count (`1` for mono, `2` for stereo)
 
 The specified format is validated against the audio device on startup. If the device doesn't support it, the player will exit with an error.
+
+### Bit-Perfect Playback (DAC Clock)
+
+By default the player follows the server clock. The DAC crystal and the server clock never run at exactly the same rate (typically tens of ppm apart), so the player keeps them aligned by occasionally dropping or inserting a single audio frame. This is what keeps multi-room playback in sync, but it means the samples reaching the DAC are not identical to the source.
+
+For single-room listening you can let the DAC clock drive playback instead:
+
+```bash
+sendspin daemon --clock-source dac
+```
+
+In `dac` mode the stream is aligned to the server timeline when it starts and is then played at the DAC's own rate. No frames are ever dropped or inserted, so playback is bit-perfect as long as volume is at 100% (or `--hardware-volume` handles volume) and the server sends the source format unchanged. Each new stream (play, seek, format change) is aligned again.
+
+The trade-off is that playback slowly drifts from the server timeline: at 30 ppm that is about 2 ms per minute or 0.1 s per hour of continuous playback. That is inaudible for a single room, but players grouped with other speakers will drift out of sync, so keep the default `server` mode for multi-room groups.
 
 ### System Volume Control
 

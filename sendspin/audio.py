@@ -68,6 +68,22 @@ class PlaybackState(Enum):
     """Sync error exceeded threshold, resetting and waiting to restart."""
 
 
+class ClockSource(str, Enum):
+    """Which clock drives playback once a stream has started.
+
+    SERVER: follow the server timeline. Sync error is corrected by dropping or
+        inserting single frames, which keeps multi-room playback aligned but
+        modifies the sample stream.
+    DAC: start aligned to the server timeline, then let the DAC clock run free.
+        No frames are ever dropped or inserted, so playback is bit-perfect, at
+        the cost of slowly drifting from the server timeline (typically tens of
+        ppm). Intended for single-room listening.
+    """
+
+    SERVER = "server"
+    DAC = "dac"
+
+
 @dataclass
 class _QueuedChunk:
     """Represents a queued audio chunk with timing information."""
@@ -138,12 +154,17 @@ class AudioPlayer:
     _CORRECTION_START_GRACE_US: Final[int] = 750_000
     """Delay sync corrections after startup so DAC/time-sync estimates can settle."""
 
+    # DAC clock mode
+    _DAC_END_PLAYOUT_MAX_US: Final[int] = 1_000_000
+    """On stream end, finish buffered audio up to this duration (accumulated drift)."""
+
     def __init__(
         self,
         compute_client_time: Callable[[int], int],
         compute_server_time: Callable[[int], int],
         now_us: Callable[[], int] | None = None,
         is_clock_synced: Callable[[], bool] | None = None,
+        clock_source: ClockSource = ClockSource.SERVER,
     ) -> None:
         """
         Initialize the audio player.
@@ -162,7 +183,10 @@ class AudioPlayer:
                 Used to tell a real mid-stream join (start time near now, clock
                 trustworthy) apart from the unsynced fallback in compute_play_time
                 (now + 500ms). Defaults to always-True.
+            clock_source: SERVER corrects drift with frame drop/insert; DAC never
+                modifies the sample stream after start (bit-perfect, single-room).
         """
+        self._clock_source = clock_source
         self._compute_client_time = compute_client_time
         self._compute_server_time = compute_server_time
         self._now_us = now_us or (lambda: int(time.monotonic() * 1_000_000))
@@ -338,6 +362,24 @@ class AudioPlayer:
         self._closed = True
         self._close_stream()
         self._stream_executor.shutdown(wait=True)
+
+    def end_of_stream_playout_us(self) -> int:
+        """Return how much buffered audio to finish before closing on stream end.
+
+        With the server clock, stream end arrives when the server timeline has
+        played everything, so nothing meaningful is left and 0 is returned. With
+        the DAC clock, playback lags or leads the server timeline by the
+        accumulated drift; the small remainder is the end of the track and is
+        played out. A large remainder means playback was stopped on purpose, so
+        it is discarded as usual.
+        """
+        if self._clock_source != ClockSource.DAC or not self._stream_started:
+            return 0
+        if self._queue.empty() and self._current_chunk is None:
+            return 0
+        if self._queued_duration_us > self._DAC_END_PLAYOUT_MAX_US:
+            return 0
+        return max(self._queued_duration_us, 1)
 
     def close_stream(self) -> None:
         """Drop queued audio and fully close the stream to release the device.
@@ -1036,8 +1078,12 @@ class AudioPlayer:
             self._fill_silence(output_buffer, bytes_written, silence_bytes)
             bytes_written += silence_bytes
         elif delta_us < 0 and can_drop_frames:
-            # Late: fast-forward by dropping input frames (DAC gating only)
-            if not (self._early_start_suspect and not self._has_reanchored):
+            # Late: fast-forward by dropping input frames (DAC gating only).
+            # With the DAC clock a small lateness is kept as a constant offset
+            # instead, so the first samples of the stream are not lost.
+            if self._clock_source == ClockSource.DAC and -delta_us <= self._REANCHOR_THRESHOLD_US:
+                self._set_playing()
+            elif not (self._early_start_suspect and not self._has_reanchored):
                 frames_to_drop = int(
                     ((-delta_us) * self._format.sample_rate + 999_999)
                     // self._MICROSECONDS_PER_SECOND
@@ -1073,6 +1119,14 @@ class AudioPlayer:
 
         # Smooth the error to avoid reacting to jitter
         self._smooth_sync_error(error_us)
+
+        # DAC clock mode: keep measuring the error (for logging) but never touch
+        # the sample stream. Re-anchoring is skipped too, since it would only
+        # reset the measurement.
+        if self._clock_source == ClockSource.DAC:
+            self._insert_every_n_frames = 0
+            self._drop_every_n_frames = 0
+            return
 
         abs_err = abs(self._sync_error_filtered_us)
 
