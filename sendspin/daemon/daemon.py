@@ -45,6 +45,7 @@ class DaemonArgs:
     listen_port: int = 8928
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
+    force_preferred_format: bool = False
     volume_controller: VolumeController | None = None
     hook_start: str | None = None
     hook_stop: str | None = None
@@ -85,7 +86,9 @@ class SendspinDaemon:
             client_roles.extend([Roles.METADATA, Roles.CONTROLLER])
 
         supported_formats = detect_supported_audio_formats(self._args.audio_device)
-        if self._args.preferred_format is not None:
+        if self._args.preferred_format is not None and self._args.force_preferred_format:
+            supported_formats = [self._args.preferred_format]
+        elif self._args.preferred_format is not None:
             supported_formats = [f for f in supported_formats if f != self._args.preferred_format]
             supported_formats.insert(0, self._args.preferred_format)
 
