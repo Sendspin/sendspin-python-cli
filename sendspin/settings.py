@@ -128,6 +128,8 @@ class ClientSettings(BaseSettings):
     audio_device: str | None = None
     use_mpris: bool = True
     audio_format: str | None = None
+    # Playback clock: "server" (drift-corrected, multi-room) or "dac" (bit-perfect).
+    clock_source: str = "server"
     use_hardware_volume: bool | None = None
     unpaired_access: bool = True
     hook_set_volume: str | None = None
@@ -158,6 +160,7 @@ class ClientSettings(BaseSettings):
         listen_port: int | None = None,
         use_mpris: bool | None = None,
         audio_format: str | None = None,
+        clock_source: str | None = None,
         use_hardware_volume: bool | None = None,
         hook_set_volume: str | None = None,
         hook_start: str | None = None,
@@ -190,6 +193,7 @@ class ClientSettings(BaseSettings):
                     "listen_port": listen_port,
                     "use_mpris": use_mpris,
                     "audio_format": audio_format,
+                    "clock_source": clock_source,
                     "use_hardware_volume": use_hardware_volume,
                     "hook_set_volume": hook_set_volume,
                     "hook_start": hook_start,
@@ -236,6 +240,8 @@ class ClientSettings(BaseSettings):
             self.audio_device = data.get("audio_device")
             self.use_mpris = data.get("use_mpris", True)
             self.audio_format = data.get("audio_format")
+            clock_source = data.get("clock_source", "server")
+            self.clock_source = clock_source if clock_source in ("server", "dac") else "server"
             self.use_hardware_volume = data.get("use_hardware_volume")
             self.unpaired_access = data.get("unpaired_access", True)
             self.hook_set_volume = data.get("hook_set_volume")

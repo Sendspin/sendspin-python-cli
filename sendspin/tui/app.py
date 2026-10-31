@@ -54,6 +54,7 @@ from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
 from PIL.Image import Image as PILImage
 
 from sendspin.artwork_connector import ArtworkHandler
+from sendspin.audio import ClockSource
 from sendspin.audio_connector import AudioStreamHandler
 from sendspin.audio_devices import AudioDevice, detect_supported_audio_formats
 from sendspin.discovery import DiscoveredServer, ServiceDiscovery
@@ -240,6 +241,7 @@ class AppArgs:
     manufacturer: str | None = None
     product_name: str | None = None
     interface: str | None = None
+    clock_source: ClockSource = ClockSource.SERVER
 
 
 class SendspinApp:
@@ -485,6 +487,7 @@ class SendspinApp:
                 on_format_change=self._handle_format_change,
                 on_volume_change=self._on_volume_change,
                 volume_controller=args.volume_controller,
+                clock_source=args.clock_source,
             )
             await self._audio_handler.read_initial_volume()
 

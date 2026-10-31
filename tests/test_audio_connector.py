@@ -18,8 +18,10 @@ class _FakeWorker:
         use_software_volume: bool,
         volume: int,
         muted: bool,
+        clock_source: object = None,
     ) -> None:
         self.audio_device = audio_device
+        self.clock_source = clock_source
         self.use_software_volume = use_software_volume
         self.volume = volume
         self.muted = muted
