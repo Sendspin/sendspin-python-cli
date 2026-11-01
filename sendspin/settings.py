@@ -132,6 +132,8 @@ class ClientSettings(BaseSettings):
     max_volume: int | None = None
     unpaired_access: bool = True
     hook_set_volume: str | None = None
+    # Output volume/mute last sent to the volume hook: {"volume": int, "muted": bool}.
+    hook_volume_state: dict[str, Any] | None = None
     hook_start: str | None = None
     hook_stop: str | None = None
     visualizer: bool = False
@@ -162,6 +164,7 @@ class ClientSettings(BaseSettings):
         use_hardware_volume: bool | None = None,
         max_volume: int | None = None,
         hook_set_volume: str | None = None,
+        hook_volume_state: dict[str, Any] | None = None,
         hook_start: str | None = None,
         hook_stop: str | None = None,
         visualizer: bool | None = None,
@@ -195,6 +198,7 @@ class ClientSettings(BaseSettings):
                     "use_hardware_volume": use_hardware_volume,
                     "max_volume": max_volume,
                     "hook_set_volume": hook_set_volume,
+                    "hook_volume_state": hook_volume_state,
                     "hook_start": hook_start,
                     "hook_stop": hook_stop,
                     "visualizer": visualizer,
@@ -250,6 +254,20 @@ class ClientSettings(BaseSettings):
             )
             self.unpaired_access = data.get("unpaired_access", True)
             self.hook_set_volume = data.get("hook_set_volume")
+            hook_state = data.get("hook_volume_state")
+            if (
+                isinstance(hook_state, dict)
+                and isinstance(hook_state.get("volume"), int)
+                and not isinstance(hook_state.get("volume"), bool)
+                and 0 <= hook_state["volume"] <= 100
+                and isinstance(hook_state.get("muted"), bool)
+            ):
+                self.hook_volume_state = {
+                    "volume": hook_state["volume"],
+                    "muted": hook_state["muted"],
+                }
+            else:
+                self.hook_volume_state = None
             self.hook_start = data.get("hook_start")
             self.hook_stop = data.get("hook_stop")
             self.visualizer = data.get("visualizer", False)

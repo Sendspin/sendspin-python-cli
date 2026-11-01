@@ -158,6 +158,7 @@ Settings are stored in `~/.config/sendspin/`:
 | `max_volume` | integer | TUI/daemon | Maximum output volume 1-100 (`--max-volume`, default: 100). Volume commands and reported volume are scaled to it |
 | `unpaired_access` | boolean | TUI/daemon | Allow servers to play on this client without pairing (`--unpaired-access true/false`, default: true). See [Pairing](#pairing) |
 | `hook_set_volume` | string | TUI/daemon | Script to run for external volume control (`--hook-set-volume`). Receives the effective volume 0-100 as the last argument |
+| `hook_volume_state` | object | TUI/daemon | Managed automatically: last output volume (0-100) and mute state sent to the volume hook, stored separately from `player_volume` |
 | `hook_start` | string | TUI/daemon | Command to run when audio stream starts |
 | `hook_stop` | string | TUI/daemon | Command to run when audio stream stops |
 | `manufacturer` | string | TUI/daemon | Manufacturer name reported in the client hello (`--manufacturer`) |
