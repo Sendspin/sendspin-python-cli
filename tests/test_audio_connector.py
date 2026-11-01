@@ -268,6 +268,158 @@ def test_external_volume_controller_updates_logical_volume(tmp_path) -> None:
     asyncio.run(exercise())
 
 
+class _ScaledController:
+    def __init__(self, volume: int = 0, muted: bool = False) -> None:
+        self.state = (volume, muted)
+        self.calls: list[tuple[int, bool]] = []
+        self.callback: object = None
+
+    async def set_state(self, volume: int, *, muted: bool) -> None:
+        self.calls.append((volume, muted))
+        self.state = (volume, muted)
+
+    async def get_state(self) -> tuple[int, bool]:
+        return self.state
+
+    async def start_monitoring(self, callback: object) -> None:
+        self.callback = callback
+
+    async def stop_monitoring(self) -> None:
+        return
+
+
+def _device() -> SimpleNamespace:
+    return SimpleNamespace(index=0, name="Fake Device")
+
+
+def test_software_volume_is_scaled_by_max_volume(monkeypatch) -> None:
+    monkeypatch.setattr(audio_connector, "_AudioSyncWorker", _FakeWorker)
+    _FakeWorker.instances.clear()
+
+    async def exercise() -> None:
+        changes: list[tuple[int, bool]] = []
+        handler = AudioStreamHandler(
+            audio_device=_device(),
+            volume=50,
+            max_volume=60,
+            on_volume_change=lambda v, m: changes.append((v, m)),
+        )
+        handler.attach_client(_FakeClient())
+        worker = _FakeWorker.instances[0]
+
+        # Initial worker volume is scaled; server-visible volume is not.
+        assert worker.volume == 30
+        assert handler.volume == 50
+
+        handler.set_volume(100, muted=False)
+        assert worker.volume == 60
+        assert handler.volume == 100
+        assert changes == [(100, False)]
+
+        handler.set_volume(0, muted=True)
+        assert worker.volume == 0
+        assert handler.volume == 0
+
+    asyncio.run(exercise())
+
+
+def test_default_max_volume_does_not_scale(monkeypatch) -> None:
+    monkeypatch.setattr(audio_connector, "_AudioSyncWorker", _FakeWorker)
+    _FakeWorker.instances.clear()
+
+    async def exercise() -> None:
+        handler = AudioStreamHandler(audio_device=_device(), volume=37)
+        handler.attach_client(_FakeClient())
+        worker = _FakeWorker.instances[0]
+        assert worker.volume == 37
+        handler.set_volume(80, muted=False)
+        assert worker.volume == 80
+
+    asyncio.run(exercise())
+
+
+def test_external_controller_set_and_readback_are_scaled() -> None:
+    async def exercise() -> None:
+        controller = _ScaledController(volume=30)
+        changes: list[tuple[int, bool]] = []
+        handler = AudioStreamHandler(
+            audio_device=_device(),
+            max_volume=60,
+            on_volume_change=lambda v, m: changes.append((v, m)),
+            volume_controller=controller,
+        )
+
+        # Output 30 at max 60 is logical 50.
+        await handler.read_initial_volume()
+        assert handler.volume == 50
+        assert controller.calls == []
+
+        # Logical command is scaled down for the output; logical state stays as sent.
+        handler.set_volume(100, muted=False)
+        await asyncio.sleep(0)
+        assert controller.calls == [(60, False)]
+        assert handler.volume == 100
+
+        handler.set_volume(50, muted=True)
+        await asyncio.sleep(0)
+        assert controller.calls[-1] == (30, True)
+        assert handler.volume == 50
+        assert handler.muted is True
+
+        # External output change is scaled back up to logical volume.
+        await handler.start_volume_monitor()
+        controller.callback(15, False)  # type: ignore[operator]
+        assert handler.volume == 25
+        assert handler.muted is False
+        assert changes[-1] == (25, False)
+
+    asyncio.run(exercise())
+
+
+def test_max_volume_boundary_values() -> None:
+    async def exercise() -> None:
+        # Output above the maximum is clamped on startup and reported as logical 100.
+        controller = _ScaledController(volume=90)
+        handler = AudioStreamHandler(
+            audio_device=_device(), max_volume=60, volume_controller=controller
+        )
+        await handler.read_initial_volume()
+        assert controller.calls == [(60, False)]
+        assert handler.volume == 100
+
+        # Output exactly at the maximum is logical 100; never reported above 100.
+        await handler.start_volume_monitor()
+        controller.callback(60, False)  # type: ignore[operator]
+        assert handler.volume == 100
+        controller.callback(100, False)  # type: ignore[operator]
+        assert handler.volume == 100
+
+        # Logical 100 maps to exactly the maximum, 0 maps to 0.
+        handler.set_volume(100, muted=False)
+        handler.set_volume(0, muted=False)
+        await asyncio.sleep(0)
+        assert controller.calls[-2:] == [(60, False), (0, False)]
+
+    asyncio.run(exercise())
+
+
+def test_max_volume_is_clamped_to_valid_range(monkeypatch) -> None:
+    monkeypatch.setattr(audio_connector, "_AudioSyncWorker", _FakeWorker)
+    _FakeWorker.instances.clear()
+
+    async def exercise() -> None:
+        over = AudioStreamHandler(audio_device=_device(), volume=100, max_volume=250)
+        over.attach_client(_FakeClient())
+        assert _FakeWorker.instances[-1].volume == 100
+
+        # Zero would divide by zero on readback; it is raised to 1.
+        under = AudioStreamHandler(audio_device=_device(), volume=100, max_volume=0)
+        under.attach_client(_FakeClient())
+        assert _FakeWorker.instances[-1].volume == 1
+
+    asyncio.run(exercise())
+
+
 def test_stream_end_closes_stream_not_just_clears(monkeypatch) -> None:
     """stream_end must fully close the stream (release the device), not just clear."""
     monkeypatch.setattr(audio_connector, "_AudioSyncWorker", _FakeWorker)
