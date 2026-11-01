@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import queue
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -65,6 +67,9 @@ class _StopWorkItem:
 class _CloseStreamWorkItem:
     """Close the audio stream and release the audio device on stream end."""
 
+    seq: int
+    """Identifies this close in the worker's `on_stream_closed` notification."""
+
 
 type _AudioWorkItem = (
     _ChunkWorkItem
@@ -87,9 +92,12 @@ class _AudioSyncWorker:
         volume: int,
         muted: bool,
         clock_source: ClockSource = ClockSource.SERVER,
+        on_stream_closed: Callable[[int], None] | None = None,
     ) -> None:
         self._audio_device = audio_device
         self._clock_source = clock_source
+        # Called on the worker thread with the close's seq once the stream is closed.
+        self._on_stream_closed = on_stream_closed
         self._use_software_volume = use_software_volume
         self._initial_volume = volume
         self._initial_muted = muted
@@ -133,9 +141,12 @@ class _AudioSyncWorker:
         """Clear queued audio on worker."""
         self._enqueue(_ClearWorkItem())
 
-    def close_stream(self) -> None:
-        """Clear queued audio and close the stream to release the audio device."""
-        self._enqueue(_CloseStreamWorkItem())
+    def close_stream(self, seq: int = 0) -> bool:
+        """Close the stream to release the audio device; return whether it was queued.
+
+        With the DAC clock, the buffered end of the stream plays out first.
+        """
+        return self._enqueue(_CloseStreamWorkItem(seq))
 
     def notify_delay_change(self, delta_us: int) -> None:
         """Notify the worker that static delay changed."""
@@ -172,15 +183,26 @@ class _AudioSyncWorker:
         if thread is not None and thread.is_alive():
             await asyncio.get_running_loop().run_in_executor(None, thread.join, 1.0)
 
-    def _enqueue(self, item: _AudioWorkItem) -> None:
+    def _enqueue(self, item: _AudioWorkItem) -> bool:
         """Best-effort enqueue to worker; drops on sustained overload."""
         queue_obj = self._queue
         if queue_obj is None:
-            return
+            return False
         try:
             queue_obj.put_nowait(item)
         except queue.Full:
             logger.warning("Audio worker queue full; dropping %s", type(item).__name__)
+            return False
+        return True
+
+    def _notify_stream_closed(self, seq: int) -> None:
+        """Report a finished stream close to the handler."""
+        if self._on_stream_closed is None:
+            return
+        try:
+            self._on_stream_closed(seq)
+        except Exception:
+            logger.exception("Stream-closed notification failed")
 
     def _run(
         self,
@@ -207,11 +229,17 @@ class _AudioSyncWorker:
         if self._use_software_volume:
             player.set_volume(software_volume, muted=software_muted)
 
+        # Items read ahead while playing out a stream's end, handled before the queue.
+        backlog: deque[_AudioWorkItem] = deque()
+
         while True:
-            try:
-                item = queue_obj.get()
-            except Exception:
-                break
+            if backlog:
+                item = backlog.popleft()
+            else:
+                try:
+                    item = queue_obj.get()
+                except Exception:
+                    break
 
             item_type = type(item)
 
@@ -223,14 +251,43 @@ class _AudioSyncWorker:
                 continue
 
             if item_type is _CloseStreamWorkItem:
+                stop_requested = False
                 playout_us = player.end_of_stream_playout_us()
                 if playout_us > 0:
-                    # DAC clock: finish the drift remainder before closing.
+                    # DAC clock: finish the drift remainder before closing. Keep serving
+                    # controls meanwhile; stop, clear or new audio end the playout early.
                     deadline = time.monotonic() + playout_us / 1_000_000 + 0.5
                     while not player.is_drained() and time.monotonic() < deadline:
-                        time.sleep(0.005)
+                        try:
+                            playout_item = queue_obj.get(timeout=0.005)
+                        except queue.Empty:
+                            continue
+                        playout_type = type(playout_item)
+                        if playout_type is _StopWorkItem:
+                            stop_requested = True
+                            break
+                        if playout_type is _SetVolumeWorkItem:
+                            if self._use_software_volume:
+                                volume_item = cast(_SetVolumeWorkItem, playout_item)
+                                software_volume = volume_item.volume
+                                software_muted = volume_item.muted
+                                player.set_volume(software_volume, muted=software_muted)
+                            continue
+                        if playout_type is _DelayChangeWorkItem:
+                            player.apply_delay_change(
+                                cast(_DelayChangeWorkItem, playout_item).delta_us
+                            )
+                            continue
+                        if playout_type is _CloseStreamWorkItem:
+                            continue
+                        # Clear or the next stream's audio: handle it after closing.
+                        backlog.append(playout_item)
+                        break
+                if stop_requested:
+                    break
                 player.close_stream()
                 current_format = None  # force set_format() when next track begins
+                self._notify_stream_closed(cast(_CloseStreamWorkItem, item).seq)
                 continue
 
             if item_type is _DelayChangeWorkItem:
@@ -270,6 +327,7 @@ class _AudioSyncWorker:
                         if drain_type is _CloseStreamWorkItem:
                             player.close_stream()
                             close_requested = True
+                            self._notify_stream_closed(cast(_CloseStreamWorkItem, drain_item).seq)
                         else:
                             player.clear()
                         buffered_chunks.clear()
@@ -383,6 +441,11 @@ class AudioStreamHandler:
         self._client: SendspinClient | None = None
         self._current_format: AudioFormat | None = None
         self._stream_active = False
+        # DAC clock: the stop event waits for the worker to finish playing the stream's
+        # end, so a stop hook (amplifier off, mute) does not cut it.
+        self._close_seq = 0
+        self._pending_stop_seq: int | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         # Kept for compatibility; playback is managed by _AudioSyncWorker.
         self.audio_player: AudioPlayer | None = None
@@ -501,7 +564,10 @@ class AudioStreamHandler:
                 volume=self._volume,
                 muted=self._muted,
                 clock_source=self._clock_source,
+                on_stream_closed=self._on_worker_stream_closed,
             )
+        with contextlib.suppress(RuntimeError):
+            self._loop = asyncio.get_running_loop()
 
         self._audio_worker.start(
             client.compute_play_time,
@@ -566,6 +632,10 @@ class AudioStreamHandler:
 
         if not self._stream_active:
             self._stream_active = True
+            if self._pending_stop_seq is not None:
+                # The previous stream's stop event never fired, so hooks still see it playing.
+                self._pending_stop_seq = None
+                return
             if self._on_event:
                 self._on_event("start")
 
@@ -574,14 +644,34 @@ class AudioStreamHandler:
         if roles is not None and "player" not in roles:
             return
 
+        self._close_seq += 1
         worker = self._audio_worker
-        if worker is not None and worker.is_running():
-            worker.close_stream()
+        close_queued = (
+            worker is not None and worker.is_running() and worker.close_stream(self._close_seq)
+        )
 
         if self._stream_active:
             self._stream_active = False
-            if self._on_event:
+            if close_queued and self._clock_source == ClockSource.DAC and self._loop is not None:
+                self._pending_stop_seq = self._close_seq
+            elif self._on_event:
                 self._on_event("stop")
+
+    def _on_worker_stream_closed(self, seq: int) -> None:
+        """Worker thread: a stream close finished; continue on the event loop."""
+        loop = self._loop
+        if loop is None:
+            return
+        with contextlib.suppress(RuntimeError):  # loop already closed
+            loop.call_soon_threadsafe(self._emit_deferred_stop, seq)
+
+    def _emit_deferred_stop(self, seq: int) -> None:
+        """Emit the stop event held back for the close `seq`, if still pending."""
+        if self._pending_stop_seq != seq:
+            return
+        self._pending_stop_seq = None
+        if self._on_event:
+            self._on_event("stop")
 
     def _on_stream_clear(self, roles: list[str] | None) -> None:
         """Handle stream clear by clearing audio queue (e.g., for seek operations)."""
@@ -594,8 +684,9 @@ class AudioStreamHandler:
 
     async def handle_disconnect(self) -> None:
         """Reset connection-scoped audio state after a disconnect."""
-        if self._stream_active:
+        if self._stream_active or self._pending_stop_seq is not None:
             self._stream_active = False
+            self._pending_stop_seq = None
             if self._on_event:
                 self._on_event("stop")
 
