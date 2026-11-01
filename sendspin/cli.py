@@ -911,7 +911,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         else:
             args.hardware_volume = is_daemon and (HW_VOLUME_AVAILABLE or ALSA_AVAILABLE)
     if args.max_volume is None:
-        args.max_volume = 100
+        args.max_volume = settings.max_volume or 100
     if args.hook_set_volume is None:
         args.hook_set_volume = settings.hook_set_volume
     if not args.hook_set_volume and args.hardware_volume and not HW_VOLUME_AVAILABLE:

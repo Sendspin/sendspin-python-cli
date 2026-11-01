@@ -129,6 +129,7 @@ class ClientSettings(BaseSettings):
     use_mpris: bool = True
     audio_format: str | None = None
     use_hardware_volume: bool | None = None
+    max_volume: int | None = None
     unpaired_access: bool = True
     hook_set_volume: str | None = None
     hook_start: str | None = None
@@ -159,6 +160,7 @@ class ClientSettings(BaseSettings):
         use_mpris: bool | None = None,
         audio_format: str | None = None,
         use_hardware_volume: bool | None = None,
+        max_volume: int | None = None,
         hook_set_volume: str | None = None,
         hook_start: str | None = None,
         hook_stop: str | None = None,
@@ -191,6 +193,7 @@ class ClientSettings(BaseSettings):
                     "use_mpris": use_mpris,
                     "audio_format": audio_format,
                     "use_hardware_volume": use_hardware_volume,
+                    "max_volume": max_volume,
                     "hook_set_volume": hook_set_volume,
                     "hook_start": hook_start,
                     "hook_stop": hook_stop,
@@ -237,6 +240,14 @@ class ClientSettings(BaseSettings):
             self.use_mpris = data.get("use_mpris", True)
             self.audio_format = data.get("audio_format")
             self.use_hardware_volume = data.get("use_hardware_volume")
+            max_volume = data.get("max_volume")
+            self.max_volume = (
+                max_volume
+                if isinstance(max_volume, int)
+                and not isinstance(max_volume, bool)
+                and 1 <= max_volume <= 100
+                else None
+            )
             self.unpaired_access = data.get("unpaired_access", True)
             self.hook_set_volume = data.get("hook_set_volume")
             self.hook_start = data.get("hook_start")
