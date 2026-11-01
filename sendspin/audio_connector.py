@@ -350,6 +350,7 @@ class AudioStreamHandler:
         on_format_change: Callable[[str | None, int, int, int], None] | None = None,
         on_volume_change: Callable[[int, bool], None] | None = None,
         volume_controller: VolumeController | None = None,
+        max_volume: int = 100,
     ) -> None:
         """Initialize the audio stream handler.
 
@@ -361,7 +362,9 @@ class AudioStreamHandler:
             on_format_change: Callback for format changes (codec, sample_rate, bit_depth, channels).
             on_volume_change: Callback for volume changes.
             volume_controller: Optional external volume controller backend.
+            max_volume: Output volume (1-100) that logical 100% maps to.
         """
+        self._max_volume = max(1, min(100, max_volume))
         self._audio_device = audio_device
         self._volume = volume
         self._muted = muted
@@ -391,6 +394,14 @@ class AudioStreamHandler:
         """Current logical muted state (what the server/user sees)."""
         return self._muted
 
+    def _to_output_volume(self, logical: int) -> int:
+        """Scale a logical (server-facing) volume to the output volume."""
+        return round(logical * self._max_volume / 100)
+
+    def _to_logical_volume(self, output: int) -> int:
+        """Scale an output volume back to the logical (server-facing) volume."""
+        return min(100, round(output * 100 / self._max_volume))
+
     async def read_initial_volume(self) -> None:
         """Read the effective initial volume state.
 
@@ -400,12 +411,13 @@ class AudioStreamHandler:
         if self._volume_controller is None:
             return
 
-        self._volume, self._muted = await self._volume_controller.get_state()
+        output_volume, self._muted = await self._volume_controller.get_state()
+        self._volume = self._to_logical_volume(output_volume)
 
     async def start_volume_monitor(self) -> None:
         """Start external volume monitoring if applicable."""
         if self._volume_controller is not None:
-            await self._volume_controller.start_monitoring(self._publish_volume_state)
+            await self._volume_controller.start_monitoring(self._on_external_volume_change)
 
     @property
     def uses_external_volume_controller(self) -> bool:
@@ -428,15 +440,19 @@ class AudioStreamHandler:
             return
 
         if self._audio_worker is not None:
-            self._audio_worker.set_volume(volume, muted=muted)
+            self._audio_worker.set_volume(self._to_output_volume(volume), muted=muted)
 
         self._publish_volume_state(volume, muted)
 
     async def _set_external_volume(self, volume: int, *, muted: bool) -> None:
         """Apply volume through the external controller and update logical state."""
         assert self._volume_controller is not None
-        await self._volume_controller.set_state(volume, muted=muted)
+        await self._volume_controller.set_state(self._to_output_volume(volume), muted=muted)
         self._publish_volume_state(volume, muted)
+
+    def _on_external_volume_change(self, output_volume: int, muted: bool) -> None:
+        """Handle an externally observed output volume change."""
+        self._publish_volume_state(self._to_logical_volume(output_volume), muted)
 
     def _publish_volume_state(self, volume: int, muted: bool) -> None:
         """Store and broadcast a new logical volume state if it changed."""
@@ -486,7 +502,7 @@ class AudioStreamHandler:
             self._audio_worker = _AudioSyncWorker(
                 audio_device=self._audio_device,
                 use_software_volume=not self.uses_external_volume_controller,
-                volume=self._volume,
+                volume=self._to_output_volume(self._volume),
                 muted=self._muted,
             )
 

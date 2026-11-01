@@ -298,6 +298,7 @@ Hardware volume is **on by default in daemon mode** and **off by default in TUI 
 ```bash
 sendspin --hardware-volume true             # Enable for TUI
 sendspin daemon --hardware-volume false     # Disable for daemon
+sendspin --max-volume 60                    # Logical 100% maps to 60% output volume
 ```
 
 If your real volume control lives on another device, you can hand volume changes off to a script instead:
