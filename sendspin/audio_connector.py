@@ -412,6 +412,9 @@ class AudioStreamHandler:
             return
 
         output_volume, self._muted = await self._volume_controller.get_state()
+        if output_volume > self._max_volume:
+            output_volume = self._max_volume
+            await self._volume_controller.set_state(output_volume, muted=self._muted)
         self._volume = self._to_logical_volume(output_volume)
 
     async def start_volume_monitor(self) -> None:
