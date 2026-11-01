@@ -20,7 +20,7 @@ class HookVolumeController:
 
     The hook script receives the effective output volume as the last argument
     in the range 0-100. When muted, the hook receives ``0`` while the logical
-    volume and mute state remain persisted separately in settings.
+    volume and mute state are persisted separately in ``hook_volume_state``.
     """
 
     def __init__(self, command: str, settings: ClientSettings) -> None:
@@ -33,7 +33,7 @@ class HookVolumeController:
         self._settings = settings
 
     async def set_state(self, volume: int, *, muted: bool) -> None:
-        """Set external volume and persist the logical state."""
+        """Set external volume and persist the output state separately from player_volume."""
         if not 0 <= volume <= 100:
             raise ValueError(f"Volume must be 0-100, got {volume}")
 
@@ -70,10 +70,16 @@ class HookVolumeController:
                 stderr.decode().strip() if stderr else "(empty)",
             )
 
-        self._settings.update(player_volume=volume, player_muted=muted)
+        self._settings.update(hook_volume_state={"volume": volume, "muted": muted})
 
     async def get_state(self) -> tuple[int, bool]:
-        """Return the persisted logical volume state."""
+        """Return the persisted hook output state.
+
+        Falls back to the player settings for configs that predate ``hook_volume_state``.
+        """
+        state = self._settings.hook_volume_state
+        if state is not None:
+            return state["volume"], state["muted"]
         volume = max(0, min(100, self._settings.player_volume))
         muted = bool(self._settings.player_muted)
         return volume, muted

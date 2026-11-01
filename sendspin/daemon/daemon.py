@@ -46,6 +46,7 @@ class DaemonArgs:
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
     volume_controller: VolumeController | None = None
+    max_volume: int = 100
     hook_start: str | None = None
     hook_stop: str | None = None
     manufacturer: str | None = None
@@ -163,6 +164,7 @@ class SendspinDaemon:
             on_format_change=self._handle_format_change,
             on_volume_change=self._on_volume_change,
             volume_controller=self._args.volume_controller,
+            max_volume=self._args.max_volume,
         )
         await self._audio_handler.read_initial_volume()
         await self._audio_handler.start_volume_monitor()
