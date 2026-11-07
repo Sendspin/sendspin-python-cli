@@ -157,3 +157,19 @@ def test_detect_supported_audio_formats_falls_back_for_alsa_only_device():
         formats = detect_supported_audio_formats(_alsa_only_device())
 
     assert formats, "expected safe-default formats for an unprobeable device"
+
+
+def test_detect_supported_audio_formats_offers_dop_rates():
+    """The 44.1 kHz family used by DSD over PCM (DoP) is offered when the device takes it."""
+    device_rates = {44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000}
+
+    def _fake_check(_device: AudioDevice, rate: int, _channels: int, _dtype: str) -> bool:
+        return rate in device_rates
+
+    device = _alsa_only_device()
+    with patch.object(_mod, "_check_format", side_effect=_fake_check):
+        formats = detect_supported_audio_formats(device)
+
+    pcm_rates = {f.sample_rate for f in formats if f.codec.value == "pcm"}
+    assert {176400, 352800} <= pcm_rates
+    assert 705600 not in pcm_rates
