@@ -38,6 +38,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# DoP (DSD over PCM) marks every frame with a marker byte in the top byte of each
+# sample, alternating 0x05 / 0xFA from frame to frame and identical on all channels.
+_DOP_MARKERS = (0x05, 0xFA)
+_DOP_CHECK_FRAMES = 8
+
+
+def is_dop_buffer(buffer: memoryview | bytes, bytes_per_sample: int, channels: int) -> bool:
+    """Return True if a PCM buffer carries DoP, which must reach the DAC unaltered.
+
+    Only 24-bit and wider samples can carry DoP. The first frames are checked for the
+    alternating markers, which plain PCM practically never produces.
+    """
+    if bytes_per_sample < 3 or channels < 1:
+        return False
+    frame_size = bytes_per_sample * channels
+    if len(buffer) < frame_size * _DOP_CHECK_FRAMES:
+        return False
+    top = bytes_per_sample - 1
+    first = buffer[top]
+    if first not in _DOP_MARKERS:
+        return False
+    other = _DOP_MARKERS[1] if first == _DOP_MARKERS[0] else _DOP_MARKERS[0]
+    for frame in range(_DOP_CHECK_FRAMES):
+        expected = first if frame % 2 == 0 else other
+        base = frame * frame_size + top
+        for channel in range(channels):
+            if buffer[base + channel * bytes_per_sample] != expected:
+                return False
+    return True
+
+
 class AudioTimeInfo(Protocol):
     """Protocol for audio timing information from sounddevice callback.
 
@@ -928,10 +959,16 @@ class AudioPlayer:
         if volume == 100:
             return
 
+        bit_depth = self._format.bit_depth if self._format else 16
+        if self._format is not None and is_dop_buffer(
+            output_buffer, bit_depth // 8, self._format.channels
+        ):
+            # Scaling DoP turns DSD into full-scale noise; its volume belongs to the amp.
+            return
+
         # Power curve for natural volume control (gentler at high volumes)
         amplitude = (volume / 100.0) ** 1.5
 
-        bit_depth = self._format.bit_depth if self._format else 16
         num_bytes = len(output_buffer)
 
         if _c_apply_volume is not None:

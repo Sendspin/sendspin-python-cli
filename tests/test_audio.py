@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sendspin.audio import AudioPlayer, PlaybackState, _QueuedChunk
+from sendspin.audio import AudioPlayer, PlaybackState, _QueuedChunk, is_dop_buffer
 
 
 class _NoCallbackStatus:
@@ -61,3 +61,53 @@ def test_sync_correction_waits_for_startup_grace_period() -> None:
 
     assert player._drop_every_n_frames == 0  # noqa: SLF001
     assert player._insert_every_n_frames == 0  # noqa: SLF001
+
+
+
+def _dop_buffer(frames: int, *, bytes_per_sample: int = 3, channels: int = 2) -> bytearray:
+    """Build packed little-endian DoP frames (marker in the top byte of each sample)."""
+    out = bytearray()
+    for frame in range(frames):
+        marker = 0x05 if frame % 2 == 0 else 0xFA
+        for _ in range(channels):
+            out += bytes(bytes_per_sample - 3) + bytes([0x69, 0x96, marker])
+    return out
+
+
+def _volume_player(volume: int, *, bit_depth: int = 24) -> AudioPlayer:
+    player = AudioPlayer(lambda ts: ts, lambda ts: ts)
+    player._format = SimpleNamespace(  # noqa: SLF001
+        sample_rate=176_400,
+        channels=2,
+        bit_depth=bit_depth,
+        frame_size=2 * bit_depth // 8,
+    )
+    player._volume = volume  # noqa: SLF001
+    player._muted = False  # noqa: SLF001
+    return player
+
+
+def test_is_dop_buffer_detects_markers() -> None:
+    assert is_dop_buffer(bytes(_dop_buffer(16)), 3, 2)
+    assert is_dop_buffer(bytes(_dop_buffer(16, bytes_per_sample=4)), 4, 2)
+    assert not is_dop_buffer(bytes(_dop_buffer(16)), 2, 3)
+    broken = _dop_buffer(16)
+    broken[3 * 2 * 3 + 2] = 0x05  # fourth frame repeats the marker of the third
+    assert not is_dop_buffer(bytes(broken), 3, 2)
+    assert not is_dop_buffer(bytes(6 * 16), 3, 2)
+
+
+def test_volume_leaves_dop_untouched() -> None:
+    dop = _dop_buffer(64)
+    player = _volume_player(40)
+    buffer = bytearray(dop)
+    player._apply_volume(memoryview(buffer))  # noqa: SLF001
+    assert buffer == dop
+
+
+def test_volume_still_scales_plain_pcm() -> None:
+    pcm = bytearray(b"\x00\x00\x40" * 2 * 64)
+    player = _volume_player(40)
+    buffer = bytearray(pcm)
+    player._apply_volume(memoryview(buffer))  # noqa: SLF001
+    assert buffer != pcm
