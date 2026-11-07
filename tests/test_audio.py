@@ -121,6 +121,27 @@ def test_dac_clock_discards_large_remainder_on_stream_end() -> None:
     assert player.end_of_stream_playout_us() == 0
 
 
+def test_dac_clock_playout_excludes_consumed_part_of_current_chunk() -> None:
+    # 1.02 s tracked, 40 ms of the current chunk already played: 980 ms remain,
+    # which is within the playout limit and must not be discarded.
+    player = AudioPlayer(lambda ts: ts, lambda ts: ts, clock_source=ClockSource.DAC)
+    player._format = SimpleNamespace(  # noqa: SLF001
+        sample_rate=48_000,
+        channels=1,
+        bit_depth=16,
+        frame_size=2,
+    )
+    player._stream_started = True  # noqa: SLF001
+    chunk_frames = 4_800  # 100 ms at 48 kHz
+    player._current_chunk = _QueuedChunk(  # noqa: SLF001
+        server_timestamp_us=0, audio_data=b"\x00\x00" * chunk_frames
+    )
+    player._current_chunk_offset = 1_920 * 2  # 40 ms consumed  # noqa: SLF001
+    player._queued_duration_us = 1_020_000  # noqa: SLF001
+
+    assert player.end_of_stream_playout_us() == 980_000
+
+
 def _late_start_player(clock_source: ClockSource, late_us: int) -> AudioPlayer:
     player = AudioPlayer(lambda ts: ts, lambda ts: ts, clock_source=clock_source)
     player._format = SimpleNamespace(  # noqa: SLF001

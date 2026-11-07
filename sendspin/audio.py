@@ -375,11 +375,22 @@ class AudioPlayer:
         """
         if self._clock_source != ClockSource.DAC or not self._stream_started:
             return 0
-        if self._queue.empty() and self._current_chunk is None:
+        # Snapshot state shared with the audio callback thread.
+        current_chunk = self._current_chunk
+        current_offset = self._current_chunk_offset
+        if self._queue.empty() and current_chunk is None:
             return 0
-        if self._queued_duration_us > self._DAC_END_PLAYOUT_MAX_US:
+        remaining_us = self._queued_duration_us
+        if current_chunk is not None and self._format is not None and self._format.frame_size:
+            # _queued_duration_us still counts the whole current chunk until it
+            # is exhausted; leave out the frames the callback already played.
+            consumed_bytes = min(current_offset, len(current_chunk.audio_data))
+            consumed_frames = consumed_bytes // self._format.frame_size
+            consumed_us = (consumed_frames * 1_000_000) // self._format.sample_rate
+            remaining_us = max(0, remaining_us - consumed_us)
+        if remaining_us > self._DAC_END_PLAYOUT_MAX_US:
             return 0
-        return max(self._queued_duration_us, 1)
+        return max(remaining_us, 1)
 
     def close_stream(self) -> None:
         """Drop queued audio and fully close the stream to release the device.
