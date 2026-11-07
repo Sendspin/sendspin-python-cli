@@ -51,3 +51,17 @@ async def test_legacy_static_delay_migrates_to_output_delay(tmp_path: Path) -> N
     saved = json.loads(path.read_text())
     assert saved["output_delay_ms"] == 120.0
     assert "static_delay_ms" not in saved
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [({}, "server"), ({"clock_source": "dac"}, "dac"), ({"clock_source": "bogus"}, "server")],
+)
+async def test_clock_source_from_settings_file(
+    tmp_path: Path, stored: dict[str, object], expected: str
+) -> None:
+    (tmp_path / "settings-daemon.json").write_text(json.dumps(stored))
+
+    settings = await get_client_settings("daemon", str(tmp_path))
+
+    assert settings.clock_source == expected

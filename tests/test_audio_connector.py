@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import sendspin.audio_connector as audio_connector
+from sendspin.audio import ClockSource
 from sendspin.audio_connector import AudioStreamHandler
 from sendspin.settings import ClientSettings
 
@@ -18,8 +20,13 @@ class _FakeWorker:
         use_software_volume: bool,
         volume: int,
         muted: bool,
+        clock_source: object = None,
+        on_stream_closed: object = None,
     ) -> None:
         self.audio_device = audio_device
+        self.clock_source = clock_source
+        self.on_stream_closed = on_stream_closed
+        self.closed_seqs: list[int] = []
         self.use_software_volume = use_software_volume
         self.volume = volume
         self.muted = muted
@@ -53,8 +60,10 @@ class _FakeWorker:
     def clear(self) -> None:
         self.cleared = True
 
-    def close_stream(self) -> None:
+    def close_stream(self, seq: int = 0) -> bool:
         self.stream_closed = True
+        self.closed_seqs.append(seq)
+        return True
 
     def set_volume(self, volume: int, *, muted: bool) -> None:
         self.volume = volume
@@ -288,3 +297,143 @@ def test_stream_end_closes_stream_not_just_clears(monkeypatch) -> None:
 
     assert worker.stream_closed, "_on_stream_end must call close_stream(), not just clear()"
     assert not worker.cleared, "_on_stream_end must not call clear() separately"
+
+
+def _dac_handler(monkeypatch, events: list[str]) -> tuple[AudioStreamHandler, _FakeWorker]:
+    monkeypatch.setattr(audio_connector, "_AudioSyncWorker", _FakeWorker)
+    _FakeWorker.instances.clear()
+    handler = AudioStreamHandler(
+        audio_device=SimpleNamespace(index=0, name="Fake Device"),
+        on_event=events.append,
+        clock_source=ClockSource.DAC,
+    )
+    handler.attach_client(_FakeClient())
+    handler._on_stream_start(SimpleNamespace(payload=SimpleNamespace(player=object())))
+    return handler, _FakeWorker.instances[0]
+
+
+async def test_dac_stream_end_defers_stop_event_until_worker_closed(monkeypatch) -> None:
+    """With the DAC clock, the stop hook waits until the stream's end has played out."""
+    events: list[str] = []
+    handler, worker = _dac_handler(monkeypatch, events)
+
+    handler._on_stream_end(None)
+    assert events == ["start"]
+
+    worker.on_stream_closed(worker.closed_seqs[-1])
+    await asyncio.sleep(0)
+    assert events == ["start", "stop"]
+
+
+async def test_dac_new_stream_cancels_pending_stop_event(monkeypatch) -> None:
+    """A stream starting before the previous one closed keeps hooks in the playing state."""
+    events: list[str] = []
+    handler, worker = _dac_handler(monkeypatch, events)
+
+    handler._on_stream_end(None)
+    first_close = worker.closed_seqs[-1]
+    handler._on_stream_start(SimpleNamespace(payload=SimpleNamespace(player=object())))
+    worker.on_stream_closed(first_close)
+    await asyncio.sleep(0)
+    assert events == ["start"]
+
+    handler._on_stream_end(None)
+    worker.on_stream_closed(worker.closed_seqs[-1])
+    await asyncio.sleep(0)
+    assert events == ["start", "stop"]
+
+
+async def test_disconnect_emits_pending_stop_event(monkeypatch) -> None:
+    """A disconnect during the DAC playout still emits the stop event once."""
+    events: list[str] = []
+    handler, _worker = _dac_handler(monkeypatch, events)
+
+    handler._on_stream_end(None)
+    await handler.handle_disconnect()
+
+    assert events == ["start", "stop"]
+
+
+class _PlayingOutPlayer:
+    """AudioPlayer stand-in whose stream end never finishes playing on its own."""
+
+    instances: list[_PlayingOutPlayer] = []
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.calls: list[str] = []
+        _PlayingOutPlayer.instances.append(self)
+
+    def end_of_stream_playout_us(self) -> int:
+        return 1_000_000
+
+    def is_drained(self) -> bool:
+        return False
+
+    def set_volume(self, volume: int, *, muted: bool) -> None:
+        self.calls.append(f"set_volume({volume},{muted})")
+
+    def close_stream(self) -> None:
+        self.calls.append("close_stream")
+
+    def clear(self) -> None:
+        self.calls.append("clear")
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+
+
+def _start_playout_worker(
+    monkeypatch, closed: list[int]
+) -> tuple[audio_connector._AudioSyncWorker, _PlayingOutPlayer]:
+    monkeypatch.setattr(audio_connector, "AudioPlayer", _PlayingOutPlayer)
+    _PlayingOutPlayer.instances.clear()
+    worker = audio_connector._AudioSyncWorker(
+        audio_device=SimpleNamespace(index=0, name="Fake Device"),
+        use_software_volume=True,
+        volume=50,
+        muted=False,
+        clock_source=ClockSource.DAC,
+        on_stream_closed=closed.append,
+    )
+    worker.start(lambda ts: ts, lambda ts: ts)
+    return worker, _PlayingOutPlayer.instances[0]
+
+
+def _wait_for(condition: object, timeout_s: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not condition() and time.monotonic() < deadline:  # type: ignore[operator]
+        time.sleep(0.005)
+
+
+async def test_stop_interrupts_end_of_stream_playout(monkeypatch) -> None:
+    """stop() ends the playout at once, so the worker releases the device within the join."""
+    closed: list[int] = []
+    worker, _player = _start_playout_worker(monkeypatch, closed)
+    thread = worker._thread
+    assert thread is not None
+
+    worker.close_stream(1)
+    started = time.monotonic()
+    await worker.stop()
+
+    assert not thread.is_alive()
+    assert time.monotonic() - started < 0.5
+    assert closed == []
+
+
+def test_playout_applies_volume_and_ends_on_clear(monkeypatch) -> None:
+    """Controls keep working while the stream's end plays out; clear ends it."""
+    closed: list[int] = []
+    worker, player = _start_playout_worker(monkeypatch, closed)
+
+    worker.close_stream(7)
+    worker.set_volume(20, muted=True)
+    _wait_for(lambda: "set_volume(20,True)" in player.calls)
+    assert "close_stream" not in player.calls
+
+    worker.clear()
+    _wait_for(lambda: closed == [7])
+
+    assert closed == [7]
+    assert player.calls[-2:] == ["close_stream", "clear"]
+    asyncio.run(worker.stop())

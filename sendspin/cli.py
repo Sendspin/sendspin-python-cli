@@ -261,6 +261,18 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         help="Command to run when audio stream stops (receives SENDSPIN_* env vars)",
     )
     target.add_argument(
+        "--clock-source",
+        choices=["server", "dac"],
+        default=default,
+        help=(
+            "Playback clock once a stream has started. 'server' (default) follows the "
+            "server timeline by dropping/inserting single frames, keeping multi-room "
+            "playback in sync. 'dac' lets the DAC clock run free after the initial "
+            "alignment: no frames are modified (bit-perfect), but playback slowly "
+            "drifts from the server timeline. Use 'dac' for single-room listening."
+        ),
+    )
+    target.add_argument(
         "--interface",
         type=str,
         default=default,
@@ -453,6 +465,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Preferred audio format as codec:sample_rate:bit_depth:channels "
             "(e.g., flac:48000:24:2). Verified against the audio device on startup."
+        ),
+    )
+    daemon_parser.add_argument(
+        "--clock-source",
+        choices=["server", "dac"],
+        default=None,
+        help=(
+            "Playback clock once a stream has started. 'server' (default) follows the "
+            "server timeline by dropping/inserting single frames, keeping multi-room "
+            "playback in sync. 'dac' lets the DAC clock run free after the initial "
+            "alignment: no frames are modified (bit-perfect), but playback slowly "
+            "drifts from the server timeline. Use 'dac' for single-room listening."
         ),
     )
     daemon_parser.add_argument(
@@ -743,6 +767,7 @@ async def _run_daemon_mode(
     pairing_store: ClientPairingStore,
 ) -> int:
     """Run the client in daemon mode (no UI)."""
+    from sendspin.audio import ClockSource
     from sendspin.daemon.daemon import DaemonArgs, SendspinDaemon
 
     client_name = _resolve_client_name(args.name)
@@ -764,6 +789,7 @@ async def _run_daemon_mode(
         manufacturer=args.manufacturer,
         product_name=args.product_name,
         interface=args.interface,
+        clock_source=ClockSource(args.clock_source),
     )
 
     daemon = SendspinDaemon(daemon_args)
@@ -880,6 +906,8 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
     args.use_mpris = not args.disable_mpris and settings.use_mpris
     if args.audio_format is None:
         args.audio_format = settings.audio_format
+    if getattr(args, "clock_source", None) is None:
+        args.clock_source = settings.clock_source
     if args.hardware_volume is None:
         if settings.use_hardware_volume is not None:
             args.hardware_volume = settings.use_hardware_volume
@@ -964,6 +992,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
             args, settings, audio_device, volume_controller, identity, pairing_store
         )
 
+    from sendspin.audio import ClockSource
     from sendspin.tui.app import AppArgs, SendspinApp
 
     client_name = _resolve_client_name(args.name)
@@ -985,6 +1014,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         manufacturer=args.manufacturer,
         product_name=args.product_name,
         interface=args.interface,
+        clock_source=ClockSource(args.clock_source),
     )
 
     app = SendspinApp(app_args)
