@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
+import numpy as np
 import sounddevice
 from aiosendspin.client.time_sync import SendspinTimeFilter
 from sounddevice import CallbackFlags
@@ -30,7 +31,6 @@ except ImportError:
     logging.getLogger(__name__).info(
         "C volume extension unavailable; falling back to numpy (slower)"
     )
-    import numpy as np
 
 if TYPE_CHECKING:
     from aiosendspin.client import AudioFormat, PCMFormat
@@ -41,32 +41,52 @@ logger = logging.getLogger(__name__)
 # DoP (DSD over PCM) marks every frame with a marker byte in the top byte of each
 # sample, alternating 0x05 / 0xFA from frame to frame and identical on all channels.
 _DOP_MARKERS = (0x05, 0xFA)
-_DOP_CHECK_FRAMES = 8
+_DOP_MIN_RUN_FRAMES = 8
 
 
-def is_dop_buffer(buffer: memoryview | bytes, bytes_per_sample: int, channels: int) -> bool:
-    """Return True if a PCM buffer carries DoP, which must reach the DAC unaltered.
+def find_dop_frames(
+    buffer: memoryview | bytes | bytearray,
+    bytes_per_sample: int,
+    channels: int,
+    previous_marker: int | None = None,
+) -> tuple[np.ndarray, int | None]:
+    """Return which frames of a PCM buffer carry DoP, plus the marker to continue from.
 
-    Only 24-bit and wider samples can carry DoP. The first frames are checked for the
-    alternating markers, which plain PCM practically never produces.
+    A run of frames whose markers alternate counts as DoP when it has at least
+    ``_DOP_MIN_RUN_FRAMES`` frames, when it continues the DoP run that ended the
+    previous buffer (``previous_marker``) or when it reaches the end of the buffer.
+    That keeps short DoP tails before zero padding, DoP that starts after silence and
+    PCM/DoP transitions inside one buffer classified correctly. Only 24-bit and wider
+    samples can carry DoP.
     """
-    if bytes_per_sample < 3 or channels < 1:
-        return False
     frame_size = bytes_per_sample * channels
-    if len(buffer) < frame_size * _DOP_CHECK_FRAMES:
-        return False
-    top = bytes_per_sample - 1
-    first = buffer[top]
-    if first not in _DOP_MARKERS:
-        return False
-    other = _DOP_MARKERS[1] if first == _DOP_MARKERS[0] else _DOP_MARKERS[0]
-    for frame in range(_DOP_CHECK_FRAMES):
-        expected = first if frame % 2 == 0 else other
-        base = frame * frame_size + top
-        for channel in range(channels):
-            if buffer[base + channel * bytes_per_sample] != expected:
-                return False
-    return True
+    n_frames = len(buffer) // frame_size if frame_size > 0 else 0
+    if bytes_per_sample < 3 or channels < 1 or n_frames == 0:
+        return np.zeros(n_frames, dtype=bool), None
+
+    samples = np.frombuffer(buffer, dtype=np.uint8, count=n_frames * frame_size)
+    tops = samples.reshape(n_frames, channels, bytes_per_sample)[:, :, bytes_per_sample - 1]
+    marker = tops[:, 0]
+    is_marker = ((marker == _DOP_MARKERS[0]) | (marker == _DOP_MARKERS[1])) & (
+        tops == marker[:, None]
+    ).all(axis=1)
+
+    # linked[i]: frame i continues the alternating run of the frame before it.
+    linked = np.zeros(n_frames, dtype=bool)
+    linked[1:] = is_marker[1:] & is_marker[:-1] & (marker[1:] != marker[:-1])
+    linked[0] = bool(is_marker[0] and previous_marker is not None and marker[0] != previous_marker)
+
+    # Number the runs; run 0 is the continuation of the previous buffer's DoP run.
+    run_ids = np.cumsum(is_marker & ~linked)
+    lengths = np.bincount(run_ids[is_marker], minlength=int(run_ids[-1]) + 1)
+    keep = lengths >= _DOP_MIN_RUN_FRAMES
+    keep[0] = True
+    if is_marker[-1]:
+        keep[run_ids[-1]] = True
+    mask = is_marker & keep[run_ids]
+
+    last_marker = int(marker[-1]) if mask[-1] else None
+    return mask, last_marker
 
 
 class AudioTimeInfo(Protocol):
@@ -262,6 +282,7 @@ class AudioPlayer:
         self._frames_until_next_insert: int = 0
         self._frames_until_next_drop: int = 0
         self._last_output_frame: bytes = b""
+        self._dop_last_marker: int | None = None
 
         # Sync error smoothing (Kalman filter) and re-anchor cooldown
         self._sync_error_filter = SendspinTimeFilter(process_std_dev=0.01, forget_factor=1.001)
@@ -430,6 +451,7 @@ class AudioPlayer:
         self._frames_until_next_insert = 0
         self._frames_until_next_drop = 0
         self._last_output_frame = b""
+        self._dop_last_marker = None
         self._sync_error_filter.reset()
         self._sync_error_filtered_us = 0.0
         self._last_reanchor_loop_time_us = 0
@@ -947,6 +969,8 @@ class AudioPlayer:
         Apply volume scaling to the output buffer.
 
         Scales audio samples by the current volume level, supporting multiple bit depths.
+        Frames carrying DoP are left untouched: scaling them turns DSD into full-scale
+        noise, so DSD volume belongs to the DAC or amplifier.
         """
         muted = self._muted
         volume = self._volume
@@ -954,22 +978,43 @@ class AudioPlayer:
         if muted or volume == 0:
             # Fill with silence
             self._fill_silence(output_buffer, 0, len(output_buffer))
+            self._dop_last_marker = None
             return
 
         if volume == 100:
-            return
-
-        bit_depth = self._format.bit_depth if self._format else 16
-        if self._format is not None and is_dop_buffer(
-            output_buffer, bit_depth // 8, self._format.channels
-        ):
-            # Scaling DoP turns DSD into full-scale noise; its volume belongs to the amp.
+            self._dop_last_marker = None
             return
 
         # Power curve for natural volume control (gentler at high volumes)
         amplitude = (volume / 100.0) ** 1.5
+        bit_depth = self._format.bit_depth if self._format else 16
 
+        if self._format is None or bit_depth < 24:
+            self._scale_samples(output_buffer, amplitude, bit_depth)
+            return
+
+        frame_size = self._format.frame_size
+        dop_frames, self._dop_last_marker = find_dop_frames(
+            output_buffer, bit_depth // 8, self._format.channels, self._dop_last_marker
+        )
+        if not dop_frames.any():
+            self._scale_samples(output_buffer, amplitude, bit_depth)
+            return
+
+        # Scale only the PCM stretches between DoP runs.
+        edges = np.flatnonzero(np.diff(dop_frames.astype(np.int8))) + 1
+        bounds = [0, *edges.tolist(), len(dop_frames)]
+        for start, end in zip(bounds[:-1], bounds[1:], strict=True):
+            if not dop_frames[start]:
+                self._scale_samples(
+                    output_buffer[start * frame_size : end * frame_size], amplitude, bit_depth
+                )
+
+    def _scale_samples(self, output_buffer: memoryview, amplitude: float, bit_depth: int) -> None:
+        """Scale the samples in a buffer by a linear amplitude factor."""
         num_bytes = len(output_buffer)
+        if num_bytes == 0:
+            return
 
         if _c_apply_volume is not None:
             # Fast path: fixed-point volume scaling via C extension
