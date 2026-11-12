@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sendspin.audio import AudioPlayer, PlaybackState, _QueuedChunk, find_dop_frames
+from sendspin.audio import (
+    AudioPlayer,
+    PlaybackState,
+    _QueuedChunk,
+    dop_idle_frames,
+    find_dop_frames,
+)
 
 
 class _NoCallbackStatus:
@@ -131,15 +137,26 @@ def test_volume_leaves_a_padded_dop_tail_untouched() -> None:
     assert buffer == tail
 
 
-def test_volume_scales_only_the_pcm_around_dop() -> None:
-    # Silence while waiting for the start, then DoP, then a transition back to PCM.
-    dop = _dop_buffer(32)
-    buffer = bytearray(6 * 8) + dop + _pcm_buffer(24)
+def test_volume_keeps_dop_that_starts_after_silence() -> None:
+    # Silence while waiting for the start, then DoP up to the end of the buffer.
+    dop = _dop_buffer(56)
+    buffer = bytearray(6 * 8) + dop
     player = _volume_player(40)
     player._apply_volume(memoryview(buffer))  # noqa: SLF001
-    assert buffer[: 6 * 8] == bytearray(6 * 8)
-    assert buffer[6 * 8 : 6 * 40] == dop
-    assert buffer[6 * 40 :] != _pcm_buffer(24)
+    assert buffer == bytearray(6 * 8) + dop
+
+
+def test_volume_scales_only_the_pcm_after_dop() -> None:
+    player = _volume_player(40)
+    player._apply_volume(memoryview(bytearray(_dop_buffer(64))))  # noqa: SLF001
+
+    # DoP continues into this buffer, then the stream turns back to PCM.
+    dop = _dop_buffer(32)
+    buffer = dop + _pcm_buffer(32)
+    player._apply_volume(memoryview(buffer))  # noqa: SLF001
+    assert buffer[: 6 * 32] == dop
+    assert buffer[6 * 32 :] != _pcm_buffer(32)
+    assert player._dop_last_marker is None  # noqa: SLF001
 
 
 def test_clear_forgets_the_dop_state() -> None:
@@ -164,3 +181,65 @@ def test_volume_still_scales_plain_pcm() -> None:
     buffer = bytearray(pcm)
     player._apply_volume(memoryview(buffer))  # noqa: SLF001
     assert buffer != pcm
+
+
+def test_dop_idle_frames_continue_the_markers() -> None:
+    frames, last = dop_idle_frames(3, 3, 2, previous_marker=0x05)
+    assert frames == bytes([0x69, 0x69, 0xFA] * 2 + [0x69, 0x69, 0x05] * 2 + [0x69, 0x69, 0xFA] * 2)
+    assert last == 0xFA
+    frames, last = dop_idle_frames(2, 4, 1, previous_marker=None)
+    assert frames == bytes([0x00, 0x69, 0x69, 0x05, 0x00, 0x69, 0x69, 0xFA])
+    assert last == 0xFA
+
+
+def _queued_player(audio: bytes, *, volume: int = 100) -> AudioPlayer:
+    player = _volume_player(volume)
+    player._queue.put_nowait(  # noqa: SLF001
+        _QueuedChunk(server_timestamp_us=1, audio_data=audio)
+    )
+    return player
+
+
+def test_underrun_after_dop_pads_with_dsd_silence() -> None:
+    player = _queued_player(bytes(_dop_buffer(3)))
+    player._dop_last_marker = 0xFA  # noqa: SLF001
+    data = player._read_input_frames_bulk(8)  # noqa: SLF001
+    assert data[: 6 * 3] == _dop_buffer(3)
+    _, padding_last = dop_idle_frames(5, 3, 2, previous_marker=0x05)
+    assert data[6 * 3 :] == dop_idle_frames(5, 3, 2, previous_marker=0x05)[0]
+    mask, last = find_dop_frames(data, 3, 2, previous_marker=0xFA)
+    assert mask.all()
+    assert last == padding_last
+
+
+def test_underrun_after_pcm_pads_with_zeros() -> None:
+    player = _queued_player(bytes(_pcm_buffer(3)))
+    data = player._read_input_frames_bulk(8)  # noqa: SLF001
+    assert data[6 * 3 :] == bytes(6 * 5)
+
+
+def test_device_underflow_during_dop_outputs_dsd_silence() -> None:
+    player = _volume_player(100)
+    player._dop_last_marker = 0x05  # noqa: SLF001
+    buffer = bytearray(6 * 4)
+    player._fill_padding(memoryview(buffer), 0, 4)  # noqa: SLF001
+    assert buffer == dop_idle_frames(4, 3, 2, previous_marker=0x05)[0]
+    assert player._dop_last_marker == 0x05  # noqa: SLF001
+
+
+def test_mute_keeps_dop_as_dsd_silence() -> None:
+    player = _volume_player(40)
+    player._muted = True  # noqa: SLF001
+    buffer = _dop_buffer(32) + _pcm_buffer(32)
+    player._dop_last_marker = 0xFA  # noqa: SLF001
+    player._apply_volume(memoryview(buffer))  # noqa: SLF001
+    assert buffer[: 6 * 32] == dop_idle_frames(32, 3, 2, previous_marker=0xFA)[0]
+    assert buffer[6 * 32 :] == bytes(6 * 32)
+
+
+def test_mute_without_dop_outputs_zeros() -> None:
+    player = _volume_player(40)
+    player._muted = True  # noqa: SLF001
+    buffer = _pcm_buffer(32)
+    player._apply_volume(memoryview(buffer))  # noqa: SLF001
+    assert buffer == bytes(6 * 32)

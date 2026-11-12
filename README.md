@@ -295,7 +295,7 @@ A server that sends DSD as DoP (DSD over PCM) packs the DSD bits into 24-bit or 
 
 DoP only works if the frames reach the DAC bit for bit:
 
-- **Volume:** software volume would turn DoP into full-scale noise, so the player recognises DoP frames by their markers and leaves them unscaled at any `player_volume` above 0 (0 and mute still output silence). Set the level on the DAC or amplifier instead, for example through `--hook-set-volume` (see [System Volume Control](#system-volume-control)) or a fixed volume on the server.
+- **Volume:** software volume would turn DoP into full-scale noise, so the player recognises DoP frames by their markers and leaves them unscaled at any `player_volume` above 0. Volume 0 and mute output DSD silence (the `0x69` idle pattern inside DoP frames), and so does an underrun while DoP plays, so the DAC stays in DSD mode instead of dropping back to PCM. Set the level on the DAC or amplifier instead, for example through `--hook-set-volume` (see [System Volume Control](#system-volume-control)) or a fixed volume on the server.
 - **Output path:** the device must pass the samples through unchanged. Point `--audio-device` at the DAC's own ALSA device (`hw:` or a `plughw:` that does not resample) rather than PulseAudio/PipeWire, dmix or another mixing or resampling plugin.
 - **Sync correction:** to stay in sync with the server clock, the player now and then repeats or skips a single frame. Each correction breaks the marker sequence, and depending on the DAC that means a short click or a brief loss of DoP lock. How often it happens depends on how far the DAC clock drifts from the server clock.
 

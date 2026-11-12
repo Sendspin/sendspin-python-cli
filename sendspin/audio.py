@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures
+import functools
 import logging
 import queue
 import time
@@ -42,6 +43,17 @@ logger = logging.getLogger(__name__)
 # sample, alternating 0x05 / 0xFA from frame to frame and identical on all channels.
 _DOP_MARKERS = (0x05, 0xFA)
 _DOP_MIN_RUN_FRAMES = 8
+# DSD idle pattern: as many ones as zeros, so the DAC outputs silence and stays in
+# DSD mode. Zero bytes would end DoP and make the DAC switch back to PCM.
+_DSD_IDLE_BYTE = 0x69
+
+
+@functools.lru_cache(maxsize=8)
+def _dop_marker_pattern(n_frames: int, channels: int, first: int) -> bytes:
+    """Return the top bytes of ``n_frames`` DoP frames whose markers start at ``first``."""
+    second = _DOP_MARKERS[0] + _DOP_MARKERS[1] - first
+    pair = bytes([first]) * channels + bytes([second]) * channels
+    return (pair * ((n_frames + 1) // 2))[: n_frames * channels]
 
 
 def find_dop_frames(
@@ -64,8 +76,27 @@ def find_dop_frames(
     if bytes_per_sample < 3 or channels < 1 or n_frames == 0:
         return np.zeros(n_frames, dtype=bool), None
 
+    top = bytes_per_sample - 1
+    if (
+        previous_marker is None
+        and buffer[top] not in _DOP_MARKERS
+        and buffer[(n_frames - 1) * frame_size + top] not in _DOP_MARKERS
+    ):
+        # Fast path for PCM: a buffer that neither continues DoP nor starts or ends
+        # with a marker holds at most a DoP fragment shorter than itself.
+        return np.zeros(n_frames, dtype=bool), None
+
+    if previous_marker is not None:
+        # Fast path for steady DoP: the whole buffer continues the marker sequence.
+        first = _DOP_MARKERS[1] if previous_marker == _DOP_MARKERS[0] else _DOP_MARKERS[0]
+        tops_bytes = bytes(memoryview(buffer)[top : n_frames * frame_size : bytes_per_sample])
+        if tops_bytes == _dop_marker_pattern(n_frames, channels, first):
+            last = first if n_frames % 2 == 1 else _DOP_MARKERS[0] + _DOP_MARKERS[1] - first
+            return np.ones(n_frames, dtype=bool), last
+
     samples = np.frombuffer(buffer, dtype=np.uint8, count=n_frames * frame_size)
     tops = samples.reshape(n_frames, channels, bytes_per_sample)[:, :, bytes_per_sample - 1]
+
     marker = tops[:, 0]
     is_marker = ((marker == _DOP_MARKERS[0]) | (marker == _DOP_MARKERS[1])) & (
         tops == marker[:, None]
@@ -87,6 +118,45 @@ def find_dop_frames(
 
     last_marker = int(marker[-1]) if mask[-1] else None
     return mask, last_marker
+
+
+def dop_idle_frames(
+    n_frames: int, bytes_per_sample: int, channels: int, previous_marker: int | None
+) -> tuple[bytes, int | None]:
+    """Return DoP frames carrying DSD silence, continuing the marker sequence.
+
+    The 16 DSD bits of each sample hold the idle pattern and the markers keep
+    alternating from ``previous_marker``, so the DAC stays locked in DSD mode.
+    Returns the frames and the marker of the last one.
+    """
+    if n_frames <= 0 or bytes_per_sample < 3 or channels < 1:
+        return b"", previous_marker
+    first = _DOP_MARKERS[1] if previous_marker == _DOP_MARKERS[0] else _DOP_MARKERS[0]
+    second = _DOP_MARKERS[1] if first == _DOP_MARKERS[0] else _DOP_MARKERS[0]
+    frames = np.zeros((n_frames, channels, bytes_per_sample), dtype=np.uint8)
+    frames[:, :, bytes_per_sample - 3 : bytes_per_sample - 1] = _DSD_IDLE_BYTE
+    frames[0::2, :, bytes_per_sample - 1] = first
+    frames[1::2, :, bytes_per_sample - 1] = second
+    last = first if n_frames % 2 == 1 else second
+    return frames.tobytes(), last
+
+
+def silence_dop_frames(
+    buffer: memoryview | bytearray, dop_frames: np.ndarray, bytes_per_sample: int, channels: int
+) -> None:
+    """Silence a buffer in place, keeping DoP frames as DoP.
+
+    PCM frames become zeros. DoP frames keep their markers and get the DSD idle
+    pattern, so a muted DSD stream stays silent DSD instead of dropping out of DoP.
+    """
+    samples = np.frombuffer(
+        buffer, dtype=np.uint8, count=len(dop_frames) * bytes_per_sample * channels
+    )
+    frames = samples.reshape(len(dop_frames), channels, bytes_per_sample)
+    frames[~dop_frames] = 0
+    if bytes_per_sample > 3:
+        frames[dop_frames, :, : bytes_per_sample - 3] = 0
+    frames[dop_frames, :, bytes_per_sample - 3 : bytes_per_sample - 1] = _DSD_IDLE_BYTE
 
 
 class AudioTimeInfo(Protocol):
@@ -490,7 +560,7 @@ class AudioPlayer:
                 logger.warning("Audio underflow detected; requesting re-anchor")
                 self._clear_requested = True
                 # Fill buffer with silence and return early to avoid glitches
-                self._fill_silence(output_buffer, 0, bytes_needed)
+                self._fill_padding(output_buffer, 0, frames)
                 return
             logger.debug("Audio callback status: %s", status)
 
@@ -752,9 +822,13 @@ class AudioPlayer:
                 try:
                     self._initialize_current_chunk()
                 except queue.Empty:
-                    # No more data - pad with silence
-                    silence_bytes = total_bytes_needed - bytes_written
-                    result[bytes_written:] = b"\x00" * silence_bytes
+                    # No more data - pad with silence (DSD silence while DoP plays)
+                    # The DoP state itself is updated later, by _apply_volume.
+                    padding, _ = self._padding_bytes(
+                        (total_bytes_needed - bytes_written) // frame_size,
+                        memoryview(result)[:bytes_written],
+                    )
+                    result[bytes_written:] = padding
                     break
 
             # Calculate how much we can read from current chunk
@@ -964,6 +1038,29 @@ class AudioPlayer:
         if num_bytes > 0:
             output_buffer[offset : offset + num_bytes] = b"\x00" * num_bytes
 
+    def _padding_bytes(self, n_frames: int, preceding: memoryview) -> tuple[bytes, int | None]:
+        """Return silence to pad an underrun, continuing DoP if the audio before it was DoP.
+
+        ``preceding`` is the audio already read into the same buffer; when it is empty,
+        the DoP state left by the previous callback decides. Also returns the DoP marker
+        of the last padding frame, or None if the padding is plain zeros.
+        """
+        assert self._format is not None
+        bytes_per_sample = self._format.bit_depth // 8
+        channels = self._format.channels
+        marker = self._dop_last_marker
+        if bytes_per_sample >= 3 and len(preceding) >= self._format.frame_size:
+            _, marker = find_dop_frames(preceding, bytes_per_sample, channels, marker)
+        if bytes_per_sample < 3 or marker is None:
+            return b"\x00" * (n_frames * self._format.frame_size), None
+        return dop_idle_frames(n_frames, bytes_per_sample, channels, marker)
+
+    def _fill_padding(self, output_buffer: memoryview, offset: int, n_frames: int) -> None:
+        """Fill frames with silence that keeps a running DoP stream in DSD mode."""
+        assert self._format is not None
+        padding, self._dop_last_marker = self._padding_bytes(n_frames, output_buffer[:0])
+        output_buffer[offset : offset + len(padding)] = padding
+
     def _apply_volume(self, output_buffer: memoryview) -> None:
         """
         Apply volume scaling to the output buffer.
@@ -974,29 +1071,33 @@ class AudioPlayer:
         """
         muted = self._muted
         volume = self._volume
-
-        if muted or volume == 0:
-            # Fill with silence
-            self._fill_silence(output_buffer, 0, len(output_buffer))
-            self._dop_last_marker = None
-            return
-
-        if volume == 100:
-            self._dop_last_marker = None
-            return
-
-        # Power curve for natural volume control (gentler at high volumes)
-        amplitude = (volume / 100.0) ** 1.5
         bit_depth = self._format.bit_depth if self._format else 16
 
         if self._format is None or bit_depth < 24:
-            self._scale_samples(output_buffer, amplitude, bit_depth)
+            # Too narrow to carry DoP.
+            self._dop_last_marker = None
+            if muted or volume == 0:
+                self._fill_silence(output_buffer, 0, len(output_buffer))
+            elif volume != 100:
+                self._scale_samples(output_buffer, (volume / 100.0) ** 1.5, bit_depth)
             return
 
+        # Track DoP at every volume, so padding and mute can keep the DAC in DSD mode.
         frame_size = self._format.frame_size
         dop_frames, self._dop_last_marker = find_dop_frames(
             output_buffer, bit_depth // 8, self._format.channels, self._dop_last_marker
         )
+
+        if muted or volume == 0:
+            silence_dop_frames(output_buffer, dop_frames, bit_depth // 8, self._format.channels)
+            return
+
+        if volume == 100:
+            return
+
+        # Power curve for natural volume control (gentler at high volumes)
+        amplitude = (volume / 100.0) ** 1.5
+
         if not dop_frames.any():
             self._scale_samples(output_buffer, amplitude, bit_depth)
             return
