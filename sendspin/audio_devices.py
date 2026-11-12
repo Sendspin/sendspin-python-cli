@@ -118,7 +118,10 @@ def detect_supported_audio_formats(
     Returns:
         List of supported audio formats, with FLAC formats first (preferred).
     """
-    sample_rates = [48000, 44100, 96000, 192000]
+    # The 44.1 kHz family above 48 kHz (88.2/176.4/352.8 kHz) is what DSD over PCM
+    # (DoP) needs: DSD64 travels as 176.4 kHz, DSD128 as 352.8 kHz and DSD256 as
+    # 705.6 kHz. Each rate is still probed against the device before it is offered.
+    sample_rates = [48000, 44100, 96000, 88200, 192000, 176400, 384000, 352800, 768000, 705600]
     bit_depths = [24, 16]
     channel_counts = [2, 1]
 

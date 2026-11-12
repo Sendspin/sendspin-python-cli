@@ -289,6 +289,16 @@ The format string uses the pattern `codec:sample_rate:bit_depth:channels`:
 
 The specified format is validated against the audio device on startup. If the device doesn't support it, the player will exit with an error.
 
+### DSD over PCM (DoP)
+
+A server that sends DSD as DoP (DSD over PCM) packs the DSD bits into 24-bit or 32-bit PCM frames whose top byte carries a marker: DSD64 travels as 176.4 kHz, DSD128 as 352.8 kHz and DSD256 as 705.6 kHz. A DAC with DoP support recognises the markers and plays the DSD directly. The player offers these rates whenever the audio device supports them, so DoP needs no extra option. Keep the automatic format, or pick a 24-bit format with `--audio-format`, because 16-bit output cannot carry DoP.
+
+DoP only works if the frames reach the DAC bit for bit:
+
+- **Volume:** software volume would turn DoP into full-scale noise, so the player recognises DoP frames by their markers and leaves them unscaled at any `player_volume` above 0. Volume 0 and mute output DSD silence (the `0x69` idle pattern inside DoP frames), and so does an underrun while DoP plays, so the DAC stays in DSD mode instead of dropping back to PCM. Set the level on the DAC or amplifier instead, for example through `--hook-set-volume` (see [System Volume Control](#system-volume-control)) or a fixed volume on the server.
+- **Output path:** the device must pass the samples through unchanged. Point `--audio-device` at the DAC's own ALSA device (`hw:` or a `plughw:` that does not resample) rather than PulseAudio/PipeWire, dmix or another mixing or resampling plugin.
+- **Sync correction:** to stay in sync with the server clock, the player now and then repeats or skips a single frame. Each correction breaks the marker sequence, and depending on the DAC that means a short click or a brief loss of DoP lock. How often it happens depends on how far the DAC clock drifts from the server clock.
+
 ### System Volume Control
 
 On Linux with PulseAudio/PipeWire, Sendspin can control your system output volume directly. Volume adjustments (keyboard shortcuts, server commands) change the system volume. The current system volume is read on startup — the `player_volume` and `player_muted` settings are only used when hardware volume is disabled.
