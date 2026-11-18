@@ -73,6 +73,7 @@ const state = {
 
 // Auto-derive server URL from current page location
 const serverUrl = `${location.protocol}//${location.host}`;
+const sendspinUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/sendspin`;
 elements.shareServerUrl.textContent = serverUrl;
 elements.shareServerUrl.href = serverUrl;
 
@@ -499,16 +500,16 @@ function destroyPlayer(reason = "shutdown") {
   state.player = null;
 
   try {
-    activePlayer.disconnect(reason);
+    activePlayer.destroy(reason);
   } catch (err) {
-    console.warn("Failed to disconnect player:", err);
+    console.warn("Failed to destroy player:", err);
   }
 }
 
 async function createPlayer() {
   const { SendspinPlayer } = await sdkImport;
   return new SendspinPlayer({
-    baseUrl: serverUrl,
+    url: sendspinUrl,
     onStateChange: handlePlayerStateChange,
   });
 }
@@ -532,7 +533,7 @@ async function connectPlayer() {
       destroyPlayer("user_request");
     } else {
       try {
-        nextPlayer.disconnect("user_request");
+        nextPlayer.destroy("user_request");
       } catch (disconnectErr) {
         console.warn("Failed to clean up after connection error:", disconnectErr);
       }
@@ -650,7 +651,7 @@ elements.listenToggleBtn.addEventListener("click", async () => {
 });
 
 const sdkImport = import(
-  "https://cdn.jsdelivr.net/npm/@sendspin/sendspin-js@5.0.0/+esm",
+  "https://cdn.jsdelivr.net/npm/@sendspin/sendspin-js@6.0.0/+esm",
 );
 
 // QR Code generation (using qrcode-generator loaded via script tag)
