@@ -31,8 +31,10 @@ jobs:
     steps:
       - name: Check out code from GitHub
         uses: actions/checkout@v6.0.2
-      - name: Install PortAudio
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      - name: Install PortAudio and PulseAudio
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2 pulseaudio
+      - name: Start PulseAudio
+        run: pulseaudio --start --exit-idle-time=-1
       - name: Install uv
         uses: astral-sh/setup-uv@v7.3.1
       - name: Set up Python
