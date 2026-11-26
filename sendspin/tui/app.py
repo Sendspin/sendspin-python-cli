@@ -923,8 +923,8 @@ class SendspinApp:
             player_cmd.command == PlayerCommand.SET_OUTPUT_DELAY
             and player_cmd.output_delay_ms is not None
         ):
-            # Client library already applied the delay change;
-            # notify audio worker so sync correction adjusts timing gradually
+            # Live client clock conversions already apply the delay change.
+            # Retain the existing audio-worker notification interface.
             assert self._client is not None
             assert self._audio_handler is not None
             new_delay_ms = self._client.output_delay_ms
