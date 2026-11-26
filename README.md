@@ -155,8 +155,10 @@ Settings are stored in `~/.config/sendspin/`:
 | `listen_port` | integer | daemon/serve | Listen port (`--port`, default: 8927) |
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
 | `use_hardware_volume` | boolean | TUI/daemon | Control hardware/system output volume instead of software volume (`--hardware-volume true/false`). Default: on for daemon (if available), off for TUI |
+| `max_volume` | integer | TUI/daemon | Maximum output volume 1-100 (`--max-volume`, default: 100). Volume commands and reported volume are scaled to it |
 | `unpaired_access` | boolean | TUI/daemon | Allow servers to play on this client without pairing (`--unpaired-access true/false`, default: true). See [Pairing](#pairing) |
 | `hook_set_volume` | string | TUI/daemon | Script to run for external volume control (`--hook-set-volume`). Receives the effective volume 0-100 as the last argument |
+| `hook_volume_state` | object | TUI/daemon | Managed automatically: last output volume (0-100) and mute state sent to the volume hook, stored separately from `player_volume` |
 | `hook_start` | string | TUI/daemon | Command to run when audio stream starts |
 | `hook_stop` | string | TUI/daemon | Command to run when audio stream stops |
 | `manufacturer` | string | TUI/daemon | Manufacturer name reported in the client hello (`--manufacturer`) |
@@ -298,6 +300,7 @@ Hardware volume is **on by default in daemon mode** and **off by default in TUI 
 ```bash
 sendspin --hardware-volume true             # Enable for TUI
 sendspin daemon --hardware-volume false     # Disable for daemon
+sendspin --max-volume 60                    # Logical 100% maps to 60% output volume
 ```
 
 If your real volume control lives on another device, you can hand volume changes off to a script instead:

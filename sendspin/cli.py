@@ -62,6 +62,16 @@ class ArgumentTarget(Protocol):
         """Add an argument to the target."""
 
 
+def _max_volume_arg(v: str) -> int:
+    try:
+        value = int(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid integer: {v!r}") from None
+    if not 1 <= value <= 100:
+        raise argparse.ArgumentTypeError("must be between 1 and 100")
+    return value
+
+
 def arg_str_to_bool(v: str) -> bool:
     s = v.lower()
     if s == "true":
@@ -222,6 +232,13 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         type=arg_str_to_bool,
         metavar="{true,false}",
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
+    )
+    target.add_argument(
+        "--max-volume",
+        type=_max_volume_arg,
+        default=default,
+        metavar="1-100",
+        help="Maximum output volume; volume commands and reported volume are scaled to it (default: 100)",
     )
     target.add_argument(
         "--unpaired-access",
@@ -469,6 +486,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--disable-mpris",
         action="store_true",
         help="Disable MPRIS integration",
+    )
+    daemon_parser.add_argument(
+        "--max-volume",
+        type=_max_volume_arg,
+        default=None,
+        metavar="1-100",
+        help="Maximum output volume; volume commands and reported volume are scaled to it (default: 100)",
     )
     daemon_parser.add_argument(
         "--hardware-volume",
@@ -759,6 +783,7 @@ async def _run_daemon_mode(
         use_mpris=args.use_mpris,
         preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
         volume_controller=volume_controller,
+        max_volume=args.max_volume,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
         manufacturer=args.manufacturer,
@@ -885,6 +910,8 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
             args.hardware_volume = settings.use_hardware_volume
         else:
             args.hardware_volume = is_daemon and (HW_VOLUME_AVAILABLE or ALSA_AVAILABLE)
+    if args.max_volume is None:
+        args.max_volume = settings.max_volume or 100
     if args.hook_set_volume is None:
         args.hook_set_volume = settings.hook_set_volume
     if not args.hook_set_volume and args.hardware_volume and not HW_VOLUME_AVAILABLE:
@@ -980,6 +1007,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         use_mpris=args.use_mpris,
         preferred_format=_resolve_preferred_format(args.audio_format, audio_device),
         volume_controller=volume_controller,
+        max_volume=args.max_volume,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
         manufacturer=args.manufacturer,

@@ -55,7 +55,7 @@ def test_client_settings_load_hook_set_volume(tmp_path) -> None:
     asyncio.run(exercise())
 
 
-def test_set_state_runs_hook_and_persists_logical_volume(monkeypatch, tmp_path) -> None:
+def test_set_state_runs_hook_and_persists_hook_state(monkeypatch, tmp_path) -> None:
     calls: list[tuple[str, ...]] = []
 
     async def fake_exec(*argv: str, stdout: int, stderr: int) -> _FakeProcess:
@@ -75,7 +75,12 @@ def test_set_state_runs_hook_and_persists_logical_volume(monkeypatch, tmp_path) 
         assert await controller.get_state() == (42, True)
 
         data = json.loads((tmp_path / "settings.json").read_text())
-        assert data["player_volume"] == 42
-        assert data["player_muted"] is True
+        assert data["hook_volume_state"] == {"volume": 42, "muted": True}
+        assert data["player_volume"] == 25
+        assert data["player_muted"] is False
+
+        reloaded = ClientSettings(_settings_file=tmp_path / "settings.json")
+        await reloaded.load()
+        assert reloaded.hook_volume_state == {"volume": 42, "muted": True}
 
     asyncio.run(exercise())
