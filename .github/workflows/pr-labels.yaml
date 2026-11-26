@@ -4,10 +4,15 @@ name: PR Labels
 # Each PR must carry exactly one of the labels the release notes sort by.
 # The label comes from the ticked "Types of changes" checkbox in the PR
 # template, since external contributors can't label their own PRs.
+#
+# Verify runs on the pull request itself, without write access. The
+# Apply job runs from `main` after the "PR event" workflow and reads the
+# pull request through the API, so pull requests from forks get their
+# label as well.
 
 # yamllint disable-line rule:truthy
 on:
-  pull_request_target:
+  pull_request:
     types:
       - opened
       - edited
@@ -18,78 +23,96 @@ on:
       - ready_for_review
     branches:
       - main
+  workflow_run:
+    workflows: [PR event]
+    types: [completed]
 
-permissions:
-  pull-requests: write
+permissions: {}
 
 jobs:
   pr_labels:
     name: Verify
     runs-on: ubuntu-latest
     # Bots like Dependabot don't use the template and label their own PRs.
-    if: github.event.pull_request.user.type != 'Bot'
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.user.type != 'Bot'
+    permissions:
+      contents: read
+    concurrency:
+      group: pr-labels-verify-${{ github.event.pull_request.number }}
     steps:
+      - name: ⤵️ Check out the label rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: 🏷 Check the "Types of changes" checkbox
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const { chooseLabel } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-labels.cjs`);
+            const result = chooseLabel(context.payload.pull_request);
+            if (result.error) {
+              core.setFailed(result.error);
+            }
+
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run'
+    permissions:
+      contents: read
+      pull-requests: write
+    # Overlapping runs for the same PR can each read a label set the
+    # other is about to change and leave a stale label behind, so they
+    # run one at a time.
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{
+        github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    steps:
+      - name: ⤵️ Check out the label rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - name: 🏷 Apply label from PR description checkbox
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
-            const known = [
-              'breaking-change', 'bugfix', 'new-feature', 'enhancement',
-              'refactor', 'documentation', 'maintenance', 'ci', 'dependencies',
-            ];
+            const dir = `${process.env.GITHUB_WORKSPACE}/.github/scripts`;
+            const { findPullRequest } = require(`${dir}/pr-event.cjs`);
+            const { KNOWN, chooseLabel } = require(`${dir}/pr-labels.cjs`);
+
+            // A PR merged right after opening still gets its label.
+            const pr = await findPullRequest({ github, context, core, base: 'main' })
+              ?? await findPullRequest({ github, context, core, base: 'main', state: 'closed' });
+            if (!pr || pr.user.type === 'Bot') {
+              return;
+            }
 
             const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
-            const current = (context.payload.pull_request.labels || [])
-              .map(l => l.name);
-
-            // Match a ticked bullet whose first backticked word is a label,
-            // e.g.  - [x] CI / workflow change: `ci`
-            const body = context.payload.pull_request.body || '';
-            const re = /^\s*-\s*\[x\][^`\n]*`([^`]+)`/gim;
-            const ticked = [];
-            for (const m of body.matchAll(re)) {
-              const name = m[1].trim();
-              if (known.includes(name) && !ticked.includes(name)) {
-                ticked.push(name);
-              }
-            }
-
-            if (ticked.length > 1) {
-              core.setFailed(
-                `Multiple "Types of changes" checkboxes are ticked ` +
-                `(${ticked.join(', ')}). Tick exactly one.`
-              );
+            const issue_number = pr.number;
+            const current = pr.labels.map(l => l.name);
+            const { label } = chooseLabel(pr);
+            if (!label) {
               return;
             }
-
-            // A ticked box wins. Without one, accept a single known label
-            // already on the PR, for PRs opened without the template.
-            if (ticked.length === 0) {
-              const existing = current.filter(n => known.includes(n));
-              if (existing.length === 1) {
-                core.info(`Skipping: PR already labelled '${existing[0]}'.`);
-                return;
-              }
-              core.setFailed(
-                'No "Types of changes" checkbox is ticked in the PR ' +
-                'description. Edit the description and tick exactly ' +
-                'one box so this PR can be release-noted.'
-              );
-              return;
-            }
-
-            const desired = ticked[0];
 
             for (const name of current) {
-              if (known.includes(name) && name !== desired) {
+              if (KNOWN.includes(name) && name !== label) {
                 await github.rest.issues.removeLabel({
                   owner, repo, issue_number, name,
                 }).catch(() => {});
               }
             }
-            if (!current.includes(desired)) {
+            if (!current.includes(label)) {
               await github.rest.issues.addLabels({
-                owner, repo, issue_number, labels: [desired],
+                owner, repo, issue_number, labels: [label],
               });
             }
