@@ -157,3 +157,23 @@ def test_detect_supported_audio_formats_falls_back_for_alsa_only_device():
         formats = detect_supported_audio_formats(_alsa_only_device())
 
     assert formats, "expected safe-default formats for an unprobeable device"
+
+
+def test_detect_supported_audio_formats_checks_complete_combinations():
+    """Only advertise formats supported at the requested rate, depth, and channels."""
+
+    def check_output_settings(
+        *, device: int | str, samplerate: int, channels: int, dtype: str
+    ) -> None:
+        if (samplerate, channels, dtype) != (96000, 2, "int24"):
+            raise ValueError("unsupported format")
+
+    with patch.object(
+        sounddevice, "check_output_settings", side_effect=check_output_settings
+    ):
+        formats = detect_supported_audio_formats(_alsa_only_device())
+
+    assert [(fmt.codec, fmt.sample_rate, fmt.bit_depth, fmt.channels) for fmt in formats] == [
+        (_mod.AudioCodec.FLAC, 96000, 24, 2),
+        (_mod.AudioCodec.PCM, 96000, 24, 2),
+    ]

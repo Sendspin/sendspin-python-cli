@@ -102,11 +102,7 @@ def _check_format(device: AudioDevice, rate: int, channels: int, dtype: str) -> 
 def detect_supported_audio_formats(
     device: AudioDevice,
 ) -> list[SupportedAudioFormat]:
-    """Detect supported audio formats by testing dimensions independently.
-
-    Tests sample rates, bit depths, and channels separately then creates the
-    cartesian product. This assumes that if individual dimensions work, their
-    combinations will too (valid for PulseAudio/PipeWire which handle conversion).
+    """Detect supported audio formats by testing each combination.
 
     Returns formats for both PCM (raw) and FLAC (compressed) codecs. FLAC formats
     are preferred and listed first since they reduce bandwidth. FLAC decoding is
@@ -122,36 +118,25 @@ def detect_supported_audio_formats(
     bit_depths = [24, 16]
     channel_counts = [2, 1]
 
-    # Test each dimension independently
-    supported_rates = [r for r in sample_rates if _check_format(device, r, 2, "int16")]
-    supported_depths = [
-        d for d in bit_depths if _check_format(device, 48000, 2, SOUNDDEVICE_DTYPE_MAP[d])
+    supported_combinations = [
+        (rate, depth, channels)
+        for depth in bit_depths
+        for rate in sample_rates
+        for channels in channel_counts
+        if _check_format(device, rate, channels, SOUNDDEVICE_DTYPE_MAP[depth])
     ]
-    supported_channels = [c for c in channel_counts if _check_format(device, 48000, c, "int16")]
 
     # Build formats for both FLAC (preferred) and PCM
     # FLAC is preferred as it reduces bandwidth while maintaining lossless quality
     supported: list[SupportedAudioFormat] = []
 
-    # Add FLAC formats first (preferred)
-    for depth in supported_depths:
-        for rate in supported_rates:
-            for ch in supported_channels:
-                supported.append(
-                    SupportedAudioFormat(
-                        codec=AudioCodec.FLAC, channels=ch, sample_rate=rate, bit_depth=depth
-                    )
+    for codec in (AudioCodec.FLAC, AudioCodec.PCM):
+        for rate, depth, channels in supported_combinations:
+            supported.append(
+                SupportedAudioFormat(
+                    codec=codec, channels=channels, sample_rate=rate, bit_depth=depth
                 )
-
-    # Add PCM formats as fallback
-    for depth in supported_depths:
-        for rate in supported_rates:
-            for ch in supported_channels:
-                supported.append(
-                    SupportedAudioFormat(
-                        codec=AudioCodec.PCM, channels=ch, sample_rate=rate, bit_depth=depth
-                    )
-                )
+            )
 
     if not supported:
         logger.warning("Could not detect supported formats, using safe defaults")
@@ -220,8 +205,7 @@ def parse_audio_format(format_str: str) -> SupportedAudioFormat:
 def validate_audio_format(fmt: SupportedAudioFormat, device: AudioDevice) -> bool:
     """Validate that an audio format's PCM dimensions are supported by the device.
 
-    Checks sample rate, bit depth, and channel count independently against the
-    audio device (matching the approach used by detect_supported_audio_formats).
+    Checks the complete format against the audio device.
 
     Args:
         fmt: The audio format to validate.
